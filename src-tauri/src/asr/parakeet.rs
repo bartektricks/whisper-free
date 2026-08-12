@@ -97,7 +97,7 @@ impl SpeechRecognizer for ParakeetRecognizer {
         tracing::info!(
             event = "model_loaded",
             model_id = %self.model_id,
-            load_ms = started.elapsed().as_millis() as u64
+            load_ms = crate::millis(started.elapsed())
         );
         self.model = Some(model);
         Ok(())
@@ -167,7 +167,10 @@ mod tests {
         ParakeetRecognizer::new(
             "parakeet-tdt-0.6b-v3",
             dir,
-            vec![Language::new("pl", "Polish"), Language::new("en", "English")],
+            vec![
+                Language::new("pl", "Polish"),
+                Language::new("en", "English"),
+            ],
             vec![Capability::LanguageDetection, Capability::Punctuation],
         )
     }
@@ -208,13 +211,18 @@ mod tests {
         ));
     }
 
+    // Asserting on constants is the point here: these are tuning values, and
+    // the test exists so that editing one past a measured boundary fails.
     #[test]
     fn the_chunking_threshold_sits_above_the_length_that_decoded_cleanly() {
         // Decision 0001: 15 s decoded fine on its own, 20 s and 29 s did not.
         // The threshold must not be so high that a known-bad length slips
         // through as a single pass.
-        assert!(CHUNK_THRESHOLD_SECS >= 15.0);
-        assert!(CHUNK_THRESHOLD_SECS < 20.0);
-        assert!(CHUNK_TARGET_SECS <= CHUNK_THRESHOLD_SECS as f32);
+        const {
+            assert!(CHUNK_THRESHOLD_SECS >= 15.0);
+            assert!(CHUNK_THRESHOLD_SECS < 20.0);
+        }
+
+        assert!(f64::from(CHUNK_TARGET_SECS) <= CHUNK_THRESHOLD_SECS);
     }
 }

@@ -13,6 +13,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// Initialise logging. The returned guard must be kept alive for the process
 /// lifetime; dropping it stops the background writer and loses buffered lines.
+#[must_use = "dropping the guard stops the log writer and loses buffered lines"]
 pub fn init(log_dir: &Path) -> Option<WorkerGuard> {
     if let Err(e) = std::fs::create_dir_all(log_dir) {
         eprintln!("could not create log directory {}: {e}", log_dir.display());

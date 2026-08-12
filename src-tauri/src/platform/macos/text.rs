@@ -24,7 +24,8 @@ extern "C" {
 pub struct MacOSTextInserter;
 
 impl MacOSTextInserter {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -66,11 +67,9 @@ impl TextInserter for MacOSTextInserter {
             .set_text(text.to_string())
             .map_err(|e| InsertError::Clipboard(e.to_string()))?;
 
-        if let Err(e) = send_paste() {
-            // Leave the text on the clipboard: the user can still paste it
-            // themselves, which beats losing the transcription entirely.
-            return Err(e);
-        }
+        // On failure the text stays on the clipboard: the user can still paste
+        // it themselves, which beats losing the transcription entirely.
+        send_paste()?;
 
         std::thread::sleep(PASTE_SETTLE);
 
@@ -93,15 +92,15 @@ impl TextInserter for MacOSTextInserter {
 /// Synthesise Cmd+V at the HID level, so the frontmost app sees a real paste.
 fn send_paste() -> Result<(), InsertError> {
     let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-        .map_err(|_| InsertError::Keystroke("could not create an event source".into()))?;
+        .map_err(|()| InsertError::Keystroke("could not create an event source".into()))?;
 
     let down = CGEvent::new_keyboard_event(source.clone(), KEY_V, true)
-        .map_err(|_| InsertError::Keystroke("could not create the key-down event".into()))?;
+        .map_err(|()| InsertError::Keystroke("could not create the key-down event".into()))?;
     down.set_flags(CGEventFlags::CGEventFlagCommand);
     down.post(CGEventTapLocation::HID);
 
     let up = CGEvent::new_keyboard_event(source, KEY_V, false)
-        .map_err(|_| InsertError::Keystroke("could not create the key-up event".into()))?;
+        .map_err(|()| InsertError::Keystroke("could not create the key-up event".into()))?;
     up.set_flags(CGEventFlags::CGEventFlagCommand);
     up.post(CGEventTapLocation::HID);
 

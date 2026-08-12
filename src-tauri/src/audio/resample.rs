@@ -8,24 +8,34 @@ use rubato::{Fft, FixedSync, Indexing, Resampler};
 
 use super::AudioError;
 
+const CHANNELS: usize = 1;
+const CHUNK: usize = 1024;
+
 /// Average interleaved channels down to mono.
 ///
 /// Averaging rather than picking channel 0: on a stereo mic, one channel may
 /// carry most of the voice, and dropping it would throw away signal.
+#[must_use]
 pub fn to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
-    let channels = channels.max(1) as usize;
+    let channels = channels.max(1);
     if channels == 1 {
         return interleaved.to_vec();
     }
+    let divisor = f32::from(channels);
     interleaved
-        .chunks_exact(channels)
-        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .chunks_exact(usize::from(channels))
+        .map(|frame| frame.iter().sum::<f32>() / divisor)
         .collect()
 }
 
 /// Resample mono audio from `from_rate` to `to_rate`.
 ///
 /// Returns the input untouched when the rates already match.
+///
+/// # Errors
+///
+/// [`AudioError::Resample`] when a rate is zero or out of range, or when the
+/// resampler itself refuses the conversion.
 pub fn resample_mono(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, AudioError> {
     if from_rate == to_rate {
         return Ok(samples.to_vec());
@@ -37,26 +47,33 @@ pub fn resample_mono(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Ve
         return Ok(Vec::new());
     }
 
-    const CHANNELS: usize = 1;
-    const CHUNK: usize = 1024;
+    let rate_as_usize = |rate: u32| {
+        usize::try_from(rate).map_err(|_| AudioError::Resample("sample rate out of range".into()))
+    };
+    let from_usize = rate_as_usize(from_rate)?;
+    let to_usize = rate_as_usize(to_rate)?;
 
-    let mut resampler = Fft::<f32>::new(
-        from_rate as usize,
-        to_rate as usize,
-        CHUNK,
-        CHANNELS,
-        FixedSync::Input,
-    )
-    .map_err(|e| AudioError::Resample(e.to_string()))?;
+    let mut resampler = Fft::<f32>::new(from_usize, to_usize, CHUNK, CHANNELS, FixedSync::Input)
+        .map_err(|e| AudioError::Resample(e.to_string()))?;
 
     let input_frames = samples.len();
-    let expected_out =
-        (input_frames as f64 * to_rate as f64 / from_rate as f64).ceil() as usize;
+    // ceil(input_frames × to_rate ÷ from_rate), in integers: this sizes the
+    // output buffer, so rounding down would clip the tail.
+    let expected_out = input_frames
+        .saturating_mul(to_usize)
+        .saturating_add(from_usize.saturating_sub(1))
+        .checked_div(from_usize)
+        .unwrap_or(0);
     let delay = resampler.output_delay();
 
     // Room for the delay at the head and the zero-padded tail of the final
     // partial chunk, both of which get trimmed below.
-    let mut out = vec![0.0f32; expected_out + delay + CHUNK * 2];
+    let mut out = vec![
+        0.0f32;
+        expected_out
+            .saturating_add(delay)
+            .saturating_add(CHUNK.saturating_mul(2))
+    ];
 
     let input = InterleavedSlice::new(samples, CHANNELS, input_frames)
         .map_err(|e| AudioError::Resample(e.to_string()))?;
@@ -72,9 +89,9 @@ pub fn resample_mono(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Ve
         let (used, produced) = resampler
             .process_into_buffer(&input, &mut output, Some(&indexing))
             .map_err(|e| AudioError::Resample(e.to_string()))?;
-        indexing.input_offset += used;
-        indexing.output_offset += produced;
-        frames_left -= used;
+        indexing.input_offset = indexing.input_offset.saturating_add(used);
+        indexing.output_offset = indexing.output_offset.saturating_add(produced);
+        frames_left = frames_left.saturating_sub(used);
         next = resampler.input_frames_next();
     }
 
@@ -86,8 +103,11 @@ pub fn resample_mono(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Ve
 
     // Drop the resampler's start-up delay, then keep only as much as the input
     // duration justifies — the rest is padding from the final partial chunk.
-    let end = (delay + expected_out).min(out.len());
-    Ok(out[delay.min(end)..end].to_vec())
+    let end = delay.saturating_add(expected_out).min(out.len());
+    Ok(out
+        .get(delay.min(end)..end)
+        .unwrap_or_default()
+        .to_vec())
 }
 
 #[cfg(test)]

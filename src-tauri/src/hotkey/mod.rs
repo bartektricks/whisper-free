@@ -25,15 +25,16 @@ pub enum HotkeyError {
 
 impl HotkeyError {
     /// Message for the user (plan §17).
+    #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            HotkeyError::Invalid(accel) => {
+            Self::Invalid(accel) => {
                 format!("\"{accel}\" isn't a shortcut LocalDictation understands. Try one with a modifier, like Option+Space.")
             }
-            HotkeyError::AlreadyTaken(accel) => {
+            Self::AlreadyTaken(accel) => {
                 format!("{accel} is already taken by another app. Pick a different shortcut in Settings › General.")
             }
-            HotkeyError::Registration(_) => {
+            Self::Registration(_) => {
                 "That shortcut could not be registered. Pick a different one in Settings › General."
                     .into()
             }
@@ -64,26 +65,28 @@ pub enum HotkeyAction {
 /// `recording` is what makes this safe against the messy cases: macOS repeats
 /// `Pressed` while a key is held, and a release can arrive after the recording
 /// was already stopped some other way.
-pub fn decide(mode: RecordingMode, event: HotkeyEvent, recording: bool) -> HotkeyAction {
-    use HotkeyAction::*;
-    use HotkeyEvent::*;
-
+#[must_use]
+pub const fn decide(mode: RecordingMode, event: HotkeyEvent, recording: bool) -> HotkeyAction {
     match (mode, event, recording) {
-        // Hold to talk: down starts, up stops.
-        (RecordingMode::HoldToTalk, Pressed, false) => Start,
-        (RecordingMode::HoldToTalk, Pressed, true) => Ignore, // key repeat
-        (RecordingMode::HoldToTalk, Released, true) => Stop,
-        (RecordingMode::HoldToTalk, Released, false) => Ignore, // stray release
-
-        // Toggle: each press flips, releases are irrelevant.
-        (RecordingMode::Toggle, Pressed, false) => Start,
-        (RecordingMode::Toggle, Pressed, true) => Stop,
-        (RecordingMode::Toggle, Released, _) => Ignore,
+        // A press with nothing running starts, in either mode.
+        (_, HotkeyEvent::Pressed, false) => HotkeyAction::Start,
+        // Hold to talk stops when the key goes up; toggle stops on the second
+        // press.
+        (RecordingMode::HoldToTalk, HotkeyEvent::Released, true)
+        | (RecordingMode::Toggle, HotkeyEvent::Pressed, true) => HotkeyAction::Stop,
+        // Everything else is noise: a hold-to-talk key repeat (macOS resends
+        // Pressed while the key is down), a release arriving after the
+        // recording already stopped, or a toggle-mode release.
+        _ => HotkeyAction::Ignore,
     }
 }
 
 /// Check that a shortcut string is one the OS layer will accept, before we try
 /// to store it.
+///
+/// # Errors
+///
+/// [`HotkeyError::Invalid`] when the accelerator is empty or does not parse.
 pub fn validate(accelerator: &str) -> Result<(), HotkeyError> {
     platform::parse(accelerator).map(|_| ())
 }

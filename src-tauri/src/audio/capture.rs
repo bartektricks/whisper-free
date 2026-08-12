@@ -42,12 +42,19 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
+    #[must_use]
     pub fn spawn() -> Self {
         let (tx, rx) = channel();
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("audio".into())
-            .spawn(move || audio_thread(rx))
-            .expect("could not start the audio thread");
+            .spawn(move || audio_thread(&rx));
+
+        // The receiver goes down with the failed spawn, so every later request
+        // returns `EngineGone` — a microphone error the user can read, rather
+        // than a panic at startup.
+        if let Err(e) = spawned {
+            tracing::error!(error = %e, "could not start the audio thread");
+        }
         Self { tx }
     }
 
@@ -59,40 +66,63 @@ impl AudioEngine {
         reply_rx.recv().map_err(|_| AudioError::EngineGone)
     }
 
+    /// # Errors
+    ///
+    /// [`AudioError::NoDevice`] when the host reports no inputs, or
+    /// [`AudioError::DeviceQuery`] when it cannot be asked.
     pub fn list_devices(&self) -> Result<Vec<AudioDevice>, AudioError> {
         self.request(Command::ListDevices)?
     }
 
     /// Begin capturing from `device`, or the system default when `None`.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::AlreadyRecording`] when a take is in flight,
+    /// [`AudioError::PermissionDenied`] when microphone access is refused, or
+    /// [`AudioError::DeviceUnavailable`] when the chosen device has gone.
     pub fn start(&self, device: Option<String>) -> Result<(), AudioError> {
         self.request(|reply| Command::Start { device, reply })?
     }
 
     /// Stop capturing and return the audio as 16 kHz mono.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::NotRecording`] when nothing was running,
+    /// [`AudioError::Empty`] when the take contained no samples, or
+    /// [`AudioError::Resample`] when the conversion fails.
     pub fn stop(&self) -> Result<AudioBuffer, AudioError> {
         self.request(|reply| Command::Stop { reply })?
     }
 
     /// Stop capturing and throw the audio away.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::EngineGone`] when the audio thread is no longer running.
     pub fn cancel(&self) -> Result<(), AudioError> {
         self.request(|reply| Command::Cancel { reply })
     }
 
+    #[must_use]
     pub fn is_recording(&self) -> bool {
-        self.request(|reply| Command::IsRecording { reply }).unwrap_or(false)
+        self.request(|reply| Command::IsRecording { reply })
+            .unwrap_or(false)
     }
 }
 
 /// State for one in-progress recording.
 struct Active {
-    _stream: cpal::Stream,
+    /// Held only to keep the capture alive; dropping it stops the callbacks.
+    stream: cpal::Stream,
     samples: Arc<Mutex<Vec<f32>>>,
     channels: u16,
     sample_rate: u32,
     device_name: String,
 }
 
-fn audio_thread(rx: Receiver<Command>) {
+fn audio_thread(rx: &Receiver<Command>) {
     let mut active: Option<Active> = None;
 
     while let Ok(command) = rx.recv() {
@@ -145,7 +175,7 @@ fn audio_thread(rx: Receiver<Command>) {
 /// Drop the stream, then convert what was captured into the ASR contract.
 fn finish(active: Active) -> Result<AudioBuffer, AudioError> {
     let Active {
-        _stream,
+        stream,
         samples,
         channels,
         sample_rate,
@@ -153,7 +183,7 @@ fn finish(active: Active) -> Result<AudioBuffer, AudioError> {
     } = active;
 
     // Dropping the stream first guarantees no callback is still appending.
-    drop(_stream);
+    drop(stream);
 
     let raw = match samples.lock() {
         Ok(mut guard) => std::mem::take(&mut *guard),
@@ -173,7 +203,7 @@ fn finish(active: Active) -> Result<AudioBuffer, AudioError> {
     tracing::info!(
         event = "recording_stopped",
         device = %device_name,
-        duration_ms = buffer.duration().as_millis() as u64
+        duration_ms = crate::millis(buffer.duration())
     );
 
     if buffer.is_empty() {
@@ -264,10 +294,14 @@ fn start_stream(requested: Option<&str>) -> Result<Active, AudioError> {
     let sample_rate = supported.sample_rate();
     let config: StreamConfig = supported.config();
 
+    let per_second = usize::try_from(sample_rate)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(usize::from(channels));
+    // Eight seconds up front covers a typical dictation without reallocating.
     let samples = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
-        sample_rate as usize * channels as usize * 8,
+        per_second.saturating_mul(8),
     )));
-    let cap = MAX_RECORDING_SECS * sample_rate as usize * channels as usize;
+    let cap = per_second.saturating_mul(MAX_RECORDING_SECS);
 
     let error_name = device_name.clone();
     let on_error = move |e: cpal::Error| {
@@ -292,7 +326,7 @@ fn start_stream(requested: Option<&str>) -> Result<Active, AudioError> {
         .map_err(|e| AudioError::StreamStart(e.to_string()))?;
 
     Ok(Active {
-        _stream: stream,
+        stream,
         samples,
         channels,
         sample_rate,
@@ -319,7 +353,7 @@ where
                 if guard.len() >= cap {
                     return; // stuck hotkey — stop growing rather than exhaust memory
                 }
-                let room = cap - guard.len();
+                let room = cap.saturating_sub(guard.len());
                 guard.extend(
                     data.iter()
                         .take(room)
@@ -329,11 +363,11 @@ where
             on_error,
             Some(Duration::from_secs(2)),
         )
-        .map_err(|e| map_build_error(e, device))
+        .map_err(|e| map_build_error(&e, device))
 }
 
 /// Turn a cpal build failure into something the app can act on.
-fn map_build_error(e: cpal::Error, device: &Device) -> AudioError {
+fn map_build_error(e: &cpal::Error, device: &Device) -> AudioError {
     let text = e.to_string();
     // cpal surfaces a TCC refusal as a generic backend error, so match on the
     // message. When in doubt this stays a generic start failure.

@@ -17,6 +17,7 @@ pub struct TrayHandles {
 }
 
 /// The text shown at the top of the tray menu for a given state.
+#[must_use]
 pub fn status_text(snapshot: &StateSnapshot) -> String {
     match snapshot.state {
         AppState::Uninitialized => "No model installed".to_string(),
@@ -31,6 +32,12 @@ pub fn status_text(snapshot: &StateSnapshot) -> String {
     }
 }
 
+/// Create the menu-bar item and its menu.
+///
+/// # Errors
+///
+/// Propagates the Tauri failure when a menu item, the menu, or the tray icon
+/// cannot be created.
 pub fn build(app: &App) -> tauri::Result<TrayHandles> {
     // Disabled: a label, not an action.
     let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
@@ -85,6 +92,11 @@ pub fn build(app: &App) -> tauri::Result<TrayHandles> {
 
 /// Show the settings window, creating focus even though the app is an
 /// Accessory (Dock-less) process.
+///
+/// # Errors
+///
+/// Propagates the Tauri failure when the window cannot be shown or focused. A
+/// window missing from the app config is logged and treated as a no-op.
 pub fn show_settings_window(app: &AppHandle) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window("settings") else {
         tracing::error!("settings window is missing from the app config");

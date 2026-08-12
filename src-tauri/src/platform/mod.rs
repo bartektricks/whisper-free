@@ -10,6 +10,7 @@ pub mod macos;
 use crate::text_insertion::TextInserter;
 
 /// The text inserter for this platform.
+#[must_use]
 pub fn text_inserter() -> Box<dyn TextInserter> {
     #[cfg(target_os = "macos")]
     return Box::new(macos::text::MacOSTextInserter::new());

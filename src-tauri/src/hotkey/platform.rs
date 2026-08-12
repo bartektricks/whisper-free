@@ -13,12 +13,26 @@ use super::HotkeyError;
 /// Registering and releasing the system-wide shortcut.
 pub trait GlobalHotkeys: Send + Sync {
     /// Make `accelerator` the only registered shortcut.
+    ///
+    /// # Errors
+    ///
+    /// [`HotkeyError::Invalid`] when the accelerator does not parse, or
+    /// [`HotkeyError::AlreadyTaken`] when another application owns it.
     fn register(&self, accelerator: &str) -> Result<(), HotkeyError>;
+
     /// Release every shortcut we hold.
+    ///
+    /// # Errors
+    ///
+    /// [`HotkeyError::Registration`] when the OS refuses to release them.
     fn unregister_all(&self) -> Result<(), HotkeyError>;
 }
 
 /// Parse an accelerator string such as `"Alt+Space"`.
+///
+/// # Errors
+///
+/// [`HotkeyError::Invalid`] when the string is empty or is not an accelerator.
 pub fn parse(accelerator: &str) -> Result<Shortcut, HotkeyError> {
     if accelerator.trim().is_empty() {
         return Err(HotkeyError::Invalid(accelerator.to_string()));
@@ -31,7 +45,8 @@ pub struct TauriGlobalHotkeys {
 }
 
 impl TauriGlobalHotkeys {
-    pub fn new(app: AppHandle) -> Self {
+    #[must_use]
+    pub const fn new(app: AppHandle) -> Self {
         Self { app }
     }
 }

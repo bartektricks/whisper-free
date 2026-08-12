@@ -6,6 +6,10 @@
 //!
 //! Run with: `cargo run --example mic_check [seconds]`
 
+// A diagnostic, not shipped code: it prints numbers about audio, so the casts
+// and the arithmetic are the point. The crate itself stays strict.
+#![allow(clippy::as_conversions, clippy::cast_precision_loss)]
+
 use std::time::Duration;
 
 use local_dictation_lib::audio::AudioEngine;
@@ -55,7 +59,7 @@ fn main() {
             println!("  peak        : {peak:.4}");
             println!("  rms         : {rms:.4}");
 
-            let expected = seconds as f64 * buffer.sample_rate as f64;
+            let expected = seconds as f64 * f64::from(buffer.sample_rate);
             let drift = (buffer.samples.len() as f64 - expected).abs() / expected;
             println!(
                 "  length      : {} (within {:.1}% of {seconds}s)",

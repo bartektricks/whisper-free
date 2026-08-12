@@ -58,7 +58,7 @@ pub struct TranscriptionOptions {
 }
 
 /// The result of one transcription.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Transcription {
     pub text: String,
     /// The language the recogniser reports, when it can report one.
@@ -71,6 +71,7 @@ pub struct Transcription {
 
 impl Transcription {
     /// Inference time divided by audio length. Below 1.0 is faster than real time.
+    #[must_use]
     pub fn real_time_factor(&self) -> f64 {
         let audio = self.audio_duration.as_secs_f64();
         if audio <= 0.0 {
@@ -84,6 +85,7 @@ impl Transcription {
     /// This is a real, observed outcome and not a theoretical one — see
     /// `docs/decisions/0001-parakeet-inference-runtime.md`. Callers must
     /// surface it rather than silently inserting an empty string.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.text.trim().is_empty()
     }
@@ -100,21 +102,29 @@ pub struct AudioBuffer {
 }
 
 impl AudioBuffer {
-    pub fn new(samples: Vec<f32>, sample_rate: u32) -> Self {
+    #[must_use]
+    pub const fn new(samples: Vec<f32>, sample_rate: u32) -> Self {
         Self {
             samples,
             sample_rate,
         }
     }
 
+    #[must_use]
     pub fn duration(&self) -> Duration {
         if self.sample_rate == 0 {
             return Duration::ZERO;
         }
-        Duration::from_secs_f64(self.samples.len() as f64 / self.sample_rate as f64)
+        // Capture is capped at ten minutes, so a count that will not fit in a
+        // u32 (74 hours at 16 kHz) cannot come from this app.
+        let Ok(frames) = u32::try_from(self.samples.len()) else {
+            return Duration::ZERO;
+        };
+        Duration::from_secs_f64(f64::from(frames) / f64::from(self.sample_rate))
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
 }

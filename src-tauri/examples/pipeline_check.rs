@@ -9,11 +9,23 @@
 //!
 //! Run with: `cargo run --release --example pipeline_check <file.wav>...`
 
+// A developer diagnostic, not shipped code. Parsing a WAV header is byte
+// indexing and integer arithmetic by nature, and a command-line tool reports a
+// bad file by exiting non-zero. The crate itself stays strict.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::exit,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
+
 use std::path::PathBuf;
 
-use local_dictation_lib::asr::{
-    AudioBuffer, SpeechRecognizer, TranscriptionOptions,
-};
+use local_dictation_lib::asr::{AudioBuffer, SpeechRecognizer, TranscriptionOptions};
 use local_dictation_lib::dictionary::Dictionary;
 use local_dictation_lib::models::{download, ModelStore};
 
@@ -53,7 +65,7 @@ fn read_wav(path: &PathBuf) -> Result<AudioBuffer, String> {
             samples = bytes[body..end]
                 .chunks_exact(2)
                 // i16::MAX, matching how transcribe-rs scales WAV input.
-                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / i16::MAX as f32)
+                .map(|c| f32::from(i16::from_le_bytes([c[0], c[1]])) / f32::from(i16::MAX))
                 .collect();
         }
         pos = body + size + (size & 1);

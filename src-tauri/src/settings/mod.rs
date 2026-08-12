@@ -21,7 +21,7 @@ pub const DEFAULT_MODEL_ID: &str = "parakeet-tdt-0.6b-v3";
 /// `Option+Space`, written in the accelerator syntax Tauri understands.
 pub const DEFAULT_HOTKEY: &str = "Alt+Space";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub hotkey: String,
@@ -86,6 +86,11 @@ impl Settings {
     ///
     /// Writes to a temporary file and renames it over the target, so an
     /// interrupted write cannot leave a half-written settings file behind.
+    ///
+    /// # Errors
+    ///
+    /// [`SettingsError::Write`] when the file cannot be created or renamed,
+    /// [`SettingsError::Encode`] when serialisation fails.
     pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -100,6 +105,7 @@ impl Settings {
 }
 
 /// Where settings live inside the application support directory.
+#[must_use]
 pub fn settings_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("settings.json")
 }
@@ -137,12 +143,14 @@ mod tests {
         let dir = temp_dir("roundtrip");
         let path = settings_path(&dir);
 
-        let mut s = Settings::default();
-        s.recording_mode = RecordingMode::Toggle;
-        s.hotkey = "Ctrl+Shift+D".into();
-        s.language = LanguageSelection::Fixed("pl".into());
-        s.input_device = Some("MacBook Pro Microphone".into());
-        s.start_at_login = true;
+        let s = Settings {
+            recording_mode: RecordingMode::Toggle,
+            hotkey: "Ctrl+Shift+D".into(),
+            language: LanguageSelection::Fixed("pl".into()),
+            input_device: Some("MacBook Pro Microphone".into()),
+            start_at_login: true,
+            ..Settings::default()
+        };
         s.save(&path).unwrap();
 
         assert_eq!(Settings::load(&path), s);

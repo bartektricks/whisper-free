@@ -28,12 +28,12 @@ pub enum AppState {
 impl fmt::Display for AppState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            AppState::Uninitialized => "uninitialized",
-            AppState::Ready => "ready",
-            AppState::Recording => "recording",
-            AppState::Transcribing => "transcribing",
-            AppState::Inserting => "inserting",
-            AppState::Error => "error",
+            Self::Uninitialized => "uninitialized",
+            Self::Ready => "ready",
+            Self::Recording => "recording",
+            Self::Transcribing => "transcribing",
+            Self::Inserting => "inserting",
+            Self::Error => "error",
         };
         f.write_str(s)
     }
@@ -52,7 +52,7 @@ pub struct InvalidTransition {
 /// Every state may fail into `Error`, and any state may re-enter itself as a
 /// no-op so that repeated events are harmless.
 fn is_valid(from: AppState, to: AppState) -> bool {
-    use AppState::*;
+    use AppState::{Error, Inserting, Ready, Recording, Transcribing, Uninitialized};
 
     if from == to {
         return true; // idempotent: repeated events must not be errors
@@ -62,14 +62,15 @@ fn is_valid(from: AppState, to: AppState) -> bool {
     }
 
     match from {
-        Uninitialized => matches!(to, Ready),
+        // Uninitialized has nowhere to go but Ready once a model loads;
+        // Inserting is the last pipeline step and returns there too.
+        Uninitialized | Inserting => matches!(to, Ready),
         // Back to Uninitialized when the model is unloaded or removed.
         Ready => matches!(to, Recording | Uninitialized),
         // Ready covers a cancelled or empty recording.
         Recording => matches!(to, Transcribing | Ready),
         // Ready covers a transcription that produced no text.
         Transcribing => matches!(to, Inserting | Ready),
-        Inserting => matches!(to, Ready),
         // Recording is reachable from Error because starting a new dictation is
         // how a user retries. Requiring a Ready hop first created a race: the
         // pipeline reports failures from a worker thread, so an error can land
@@ -99,17 +100,20 @@ impl Default for StateMachine {
 }
 
 impl StateMachine {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             state: AppState::Uninitialized,
             message: None,
         }
     }
 
-    pub fn state(&self) -> AppState {
+    #[must_use]
+    pub const fn state(&self) -> AppState {
         self.state
     }
 
+    #[must_use]
     pub fn snapshot(&self) -> StateSnapshot {
         StateSnapshot {
             state: self.state,
@@ -120,6 +124,11 @@ impl StateMachine {
     /// Move to `next`, rejecting transitions the pipeline cannot make.
     ///
     /// Returns the new snapshot on success so the caller can emit it.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidTransition`] when `next` is not reachable from the current
+    /// state. The machine is left untouched.
     pub fn transition_to(&mut self, next: AppState) -> Result<StateSnapshot, InvalidTransition> {
         if !is_valid(self.state, next) {
             return Err(InvalidTransition {
@@ -142,6 +151,10 @@ impl StateMachine {
     }
 
     /// Recover from an error back to a usable state.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidTransition`] when `to` is not reachable from the current state.
     pub fn clear_error(&mut self, to: AppState) -> Result<StateSnapshot, InvalidTransition> {
         self.message = None;
         self.transition_to(to)

@@ -51,6 +51,11 @@ pub trait SpeechRecognizer: Send {
 
     /// Load the model into memory. Idempotent: loading an already-loaded model
     /// is a no-op rather than an error.
+    ///
+    /// # Errors
+    ///
+    /// [`AsrError::ModelNotInstalled`] when the files are absent, or
+    /// [`AsrError::ModelLoad`] when they are present but unusable.
     fn load(&mut self) -> Result<(), AsrError>;
 
     /// Release model memory. Idempotent.
@@ -63,6 +68,12 @@ pub trait SpeechRecognizer: Send {
     /// Loads the model first if it is not already loaded. May return a
     /// transcription whose text is empty — callers must check
     /// [`Transcription::is_empty`] rather than assuming success means text.
+    ///
+    /// # Errors
+    ///
+    /// [`AsrError::Transcription`] when inference fails, or one of the
+    /// `Unsupported*` variants when `options` asks for something this model
+    /// cannot do.
     fn transcribe(
         &mut self,
         audio: &AudioBuffer,
@@ -80,6 +91,12 @@ pub trait SpeechRecognizer: Send {
 ///
 /// Keeps the capability check in one place instead of repeating it in each
 /// implementation.
+///
+/// # Errors
+///
+/// [`AsrError::UnsupportedCapability`] when the recogniser cannot detect or
+/// cannot be pinned, and [`AsrError::UnsupportedLanguage`] when it can be
+/// pinned but not to the requested language.
 pub fn check_language_request(
     recognizer: &dyn SpeechRecognizer,
     selection: &LanguageSelection,
@@ -122,7 +139,7 @@ mod tests {
     }
 
     impl SpeechRecognizer for FakeRecognizer {
-        fn model_id(&self) -> &str {
+        fn model_id(&self) -> &'static str {
             "fake"
         }
         fn supported_languages(&self) -> &[Language] {

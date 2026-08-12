@@ -1,4 +1,9 @@
 //! Tauri commands — the only way the UI talks to the backend (plan §16).
+//!
+//! `#[tauri::command]` fixes these signatures: every argument has to be an
+//! owned value the macro can deserialise or inject (`State`, `AppHandle`,
+//! `String`), so taking them by reference is not an option here.
+#![allow(clippy::needless_pass_by_value)]
 
 use tauri::{AppHandle, Manager, State};
 
@@ -14,16 +19,28 @@ use crate::{tray, AppContext};
 /// (plan §17). Technical detail goes to the log, not to the user.
 pub type CommandResult<T> = Result<T, String>;
 
+/// # Errors
+///
+/// When the state lock is poisoned.
 #[tauri::command]
 pub fn get_recording_state(ctx: State<'_, AppContext>) -> CommandResult<StateSnapshot> {
     Ok(ctx.state.lock().map_err(lock_err)?.snapshot())
 }
 
+/// # Errors
+///
+/// When the settings lock is poisoned.
 #[tauri::command]
 pub fn get_settings(ctx: State<'_, AppContext>) -> CommandResult<Settings> {
     Ok(ctx.settings.lock().map_err(lock_err)?.clone())
 }
 
+/// Validate, apply, and persist new settings.
+///
+/// # Errors
+///
+/// When the shortcut is invalid or already taken, when the login item cannot
+/// be changed, or when the settings file cannot be written.
 #[tauri::command]
 pub fn update_settings(
     app: AppHandle,
@@ -66,6 +83,9 @@ pub fn update_settings(
     Ok(settings)
 }
 
+/// # Errors
+///
+/// When the settings window cannot be shown or focused.
 #[tauri::command]
 pub fn open_settings_window(app: AppHandle) -> CommandResult<()> {
     tray::show_settings_window(&app).map_err(|e| {
@@ -74,6 +94,9 @@ pub fn open_settings_window(app: AppHandle) -> CommandResult<()> {
     })
 }
 
+/// # Errors
+///
+/// When no microphone is present or the host cannot be queried.
 #[tauri::command]
 pub fn list_audio_devices(ctx: State<'_, AppContext>) -> CommandResult<Vec<AudioDevice>> {
     ctx.audio.list_devices().map_err(|e| {
@@ -94,14 +117,12 @@ pub struct MicrophoneTest {
     pub heard_audio: bool,
 }
 
+/// # Errors
+///
+/// When the settings lock is poisoned, or the microphone cannot be opened.
 #[tauri::command]
 pub fn start_microphone_test(ctx: State<'_, AppContext>) -> CommandResult<()> {
-    let device = ctx
-        .settings
-        .lock()
-        .map_err(lock_err)?
-        .input_device
-        .clone();
+    let device = ctx.settings.lock().map_err(lock_err)?.input_device.clone();
 
     ctx.audio.start(device).map_err(|e| {
         tracing::warn!(error = %e, "microphone test could not start");
@@ -109,6 +130,9 @@ pub fn start_microphone_test(ctx: State<'_, AppContext>) -> CommandResult<()> {
     })
 }
 
+/// # Errors
+///
+/// When nothing was being recorded, or the take could not be converted.
 #[tauri::command]
 pub fn stop_microphone_test(ctx: State<'_, AppContext>) -> CommandResult<MicrophoneTest> {
     let buffer = ctx.audio.stop().map_err(|e| {
@@ -116,33 +140,38 @@ pub fn stop_microphone_test(ctx: State<'_, AppContext>) -> CommandResult<Microph
         e.user_message()
     })?;
 
-    let peak = buffer
-        .samples
-        .iter()
-        .fold(0.0f32, |max, s| max.max(s.abs()));
+    let peak = buffer.samples.iter().fold(0.0f32, |max, s| max.max(s.abs()));
 
     // macOS hands back digital silence when microphone access is refused, so a
     // flat take is worth calling out rather than reporting as success.
     let heard_audio = peak > 0.0005;
+    let duration_ms = crate::millis(buffer.duration());
 
     tracing::info!(
         event = "microphone_test_finished",
-        duration_ms = buffer.duration().as_millis() as u64,
+        duration_ms,
         heard_audio
     );
 
     Ok(MicrophoneTest {
-        duration_ms: buffer.duration().as_millis() as u64,
+        duration_ms,
         peak_level: peak,
         heard_audio,
     })
 }
 
+/// # Errors
+///
+/// When the audio thread is no longer running.
 #[tauri::command]
 pub fn cancel_microphone_test(ctx: State<'_, AppContext>) -> CommandResult<()> {
     ctx.audio.cancel().map_err(|e| e.user_message())
 }
 
+/// # Errors
+///
+/// Never; the signature matches the other commands so the UI can treat them
+/// alike.
 #[tauri::command]
 pub fn get_models(ctx: State<'_, AppContext>) -> CommandResult<Vec<ModelInfo>> {
     Ok(ctx.models.list())
@@ -150,6 +179,12 @@ pub fn get_models(ctx: State<'_, AppContext>) -> CommandResult<Vec<ModelInfo>> {
 
 /// Start downloading a model. Returns immediately; progress arrives as
 /// `model_download_progress` events (plan §16).
+///
+/// # Errors
+///
+/// When the model id is unknown, the downloads lock is poisoned, or the worker
+/// thread cannot be started. Failures during the download itself arrive as
+/// `model_download_failed` events instead.
 #[tauri::command]
 pub fn download_model(
     app: AppHandle,
@@ -170,7 +205,7 @@ pub fn download_model(
     }
 
     let store = ctx.models.clone();
-    let app_for_thread = app.clone();
+    let app_for_thread = app;
 
     std::thread::Builder::new()
         .name("model-download".into())
@@ -218,6 +253,9 @@ pub fn download_model(
     Ok(())
 }
 
+/// # Errors
+///
+/// When the downloads lock is poisoned.
 #[tauri::command]
 pub fn cancel_model_download(ctx: State<'_, AppContext>, model_id: String) -> CommandResult<()> {
     if let Some(flag) = ctx.downloads.lock().map_err(lock_err)?.get(&model_id) {
@@ -226,6 +264,9 @@ pub fn cancel_model_download(ctx: State<'_, AppContext>, model_id: String) -> Co
     Ok(())
 }
 
+/// # Errors
+///
+/// When the recogniser lock is poisoned, or the files cannot be deleted.
 #[tauri::command]
 pub fn delete_model(
     app: AppHandle,
@@ -236,10 +277,7 @@ pub fn delete_model(
     // session is asking for trouble.
     let was_loaded = {
         let mut guard = ctx.recognizer.lock().map_err(lock_err)?;
-        let loaded_this = guard
-            .as_ref()
-            .map(|r| r.model_id() == model_id)
-            .unwrap_or(false);
+        let loaded_this = guard.as_ref().is_some_and(|r| r.model_id() == model_id);
         if loaded_this {
             if let Some(r) = guard.as_mut() {
                 r.unload();
@@ -260,11 +298,17 @@ pub fn delete_model(
     Ok(())
 }
 
+/// # Errors
+///
+/// When the dictionary lock is poisoned.
 #[tauri::command]
 pub fn get_dictionary(ctx: State<'_, AppContext>) -> CommandResult<Vec<DictionaryEntry>> {
     Ok(ctx.dictionary.lock().map_err(lock_err)?.entries.clone())
 }
 
+/// # Errors
+///
+/// When `input` is blank, the lock is poisoned, or the file cannot be saved.
 #[tauri::command]
 pub fn add_dictionary_entry(
     ctx: State<'_, AppContext>,
@@ -279,6 +323,10 @@ pub fn add_dictionary_entry(
     Ok(dictionary.entries.clone())
 }
 
+/// # Errors
+///
+/// When `input` is blank, no entry has that id, the lock is poisoned, or the
+/// file cannot be saved.
 #[tauri::command]
 pub fn update_dictionary_entry(
     ctx: State<'_, AppContext>,
@@ -295,6 +343,10 @@ pub fn update_dictionary_entry(
     Ok(dictionary.entries.clone())
 }
 
+/// # Errors
+///
+/// When no entry has that id, the lock is poisoned, or the file cannot be
+/// saved.
 #[tauri::command]
 pub fn delete_dictionary_entry(
     ctx: State<'_, AppContext>,
@@ -306,6 +358,9 @@ pub fn delete_dictionary_entry(
     Ok(dictionary.entries.clone())
 }
 
+/// # Errors
+///
+/// When the dictionary file cannot be written.
 fn persist_dictionary(ctx: &AppContext, dictionary: &Dictionary) -> CommandResult<()> {
     let path = crate::dictionary::dictionary_path(&ctx.data_dir);
     dictionary.save(&path).map_err(|e| {
@@ -315,12 +370,22 @@ fn persist_dictionary(ctx: &AppContext, dictionary: &Dictionary) -> CommandResul
 }
 
 /// Whether the OS will let us paste into other applications.
+///
+/// # Errors
+///
+/// Never; the signature matches the other commands so the UI can treat them
+/// alike.
 #[tauri::command]
 pub fn can_insert_text(ctx: State<'_, AppContext>) -> CommandResult<bool> {
     Ok(ctx.inserter.can_insert())
 }
 
 /// Open the Accessibility settings pane so the user can grant permission.
+///
+/// # Errors
+///
+/// Never; the signature matches the other commands so the UI can treat them
+/// alike.
 #[tauri::command]
 pub fn request_insert_permission(ctx: State<'_, AppContext>) -> CommandResult<()> {
     ctx.inserter.request_permission();
@@ -334,6 +399,10 @@ pub fn quit_app(app: AppHandle) {
 }
 
 /// Register or unregister the app as a login item.
+///
+/// # Errors
+///
+/// When the OS refuses to add or remove the login item.
 fn apply_start_at_login(app: &AppHandle, enabled: bool) -> CommandResult<()> {
     use tauri_plugin_autostart::ManagerExt;
 

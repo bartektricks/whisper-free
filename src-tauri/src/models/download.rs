@@ -27,11 +27,19 @@ pub struct DownloadProgress {
 }
 
 impl DownloadProgress {
+    /// Completed fraction in `0.0..=1.0`, clamped so a server that sends more
+    /// than it advertised cannot push a progress bar past the end.
+    #[must_use]
     pub fn fraction(&self) -> f64 {
         if self.total_bytes == 0 {
             return 0.0;
         }
-        (self.downloaded_bytes as f64 / self.total_bytes as f64).min(1.0)
+        // `u64` has no lossless conversion to `f64`, and none is needed: model
+        // files are a few hundred megabytes, far below the 2^53 where integers
+        // stop being exact, and the result only ever drives a progress bar.
+        #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+        let fraction = self.downloaded_bytes as f64 / self.total_bytes as f64;
+        fraction.min(1.0)
     }
 }
 
@@ -40,28 +48,37 @@ impl DownloadProgress {
 pub struct CancelFlag(Arc<AtomicBool>);
 
 impl CancelFlag {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Relaxed);
     }
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
 }
 
 /// Compute the SHA-256 of a file already on disk.
+///
+/// # Errors
+///
+/// [`ModelError::Io`] when the file cannot be opened or read.
 pub fn file_digest(path: &Path) -> Result<String, ModelError> {
     let mut file = std::fs::File::open(path).map_err(|e| ModelError::Io(e.to_string()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
-        let n = file.read(&mut buf).map_err(|e| ModelError::Io(e.to_string()))?;
-        if n == 0 {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| ModelError::Io(e.to_string()))?;
+        let Some(chunk) = buf.get(..n) else { break };
+        if chunk.is_empty() {
             break;
         }
-        hasher.update(&buf[..n]);
+        hasher.update(chunk);
     }
     Ok(hex(&hasher.finalize()))
 }
@@ -77,6 +94,12 @@ fn hex(bytes: &[u8]) -> String {
 /// Download every file of `descriptor` that is not already present and valid.
 ///
 /// `on_progress` is called as bytes arrive, with totals across the whole model.
+///
+/// # Errors
+///
+/// [`ModelError::Download`] when a transfer fails, [`ModelError::Checksum`]
+/// when a file does not match its pinned digest, [`ModelError::Io`] when it
+/// cannot be written, and [`ModelError::Cancelled`] when `cancel` is raised.
 pub fn install(
     store: &ModelStore,
     descriptor: &ModelDescriptor,
@@ -100,11 +123,8 @@ pub fn install(
 
         // Already there at the right size — trust the size check here rather
         // than re-hashing 650 MB on every launch.
-        if std::fs::metadata(&target)
-            .map(|m| m.len() == file.size_bytes)
-            .unwrap_or(false)
-        {
-            completed_bytes += file.size_bytes;
+        if std::fs::metadata(&target).is_ok_and(|m| m.len() == file.size_bytes) {
+            completed_bytes = completed_bytes.saturating_add(file.size_bytes);
             on_progress(DownloadProgress {
                 model_id: descriptor.id.to_string(),
                 file: file.name.to_string(),
@@ -125,7 +145,7 @@ pub fn install(
             descriptor.id,
             &mut on_progress,
         )?;
-        completed_bytes += file.size_bytes;
+        completed_bytes = completed_bytes.saturating_add(file.size_bytes);
     }
 
     tracing::info!(event = "model_download_completed", model_id = descriptor.id);
@@ -166,22 +186,23 @@ fn download_one(
         let n = reader
             .read(&mut buf)
             .map_err(|e| ModelError::Download(e.to_string()))?;
-        if n == 0 {
+        let Some(chunk) = buf.get(..n) else { break };
+        if chunk.is_empty() {
             break;
         }
 
-        hasher.update(&buf[..n]);
-        out.write_all(&buf[..n])
+        hasher.update(chunk);
+        out.write_all(chunk)
             .map_err(|e| ModelError::Io(e.to_string()))?;
-        written += n as u64;
+        written = written.saturating_add(n.try_into().unwrap_or(u64::MAX));
 
         // Roughly every 2 MB, so the UI updates without being flooded.
-        if written - last_reported >= 2 << 20 {
+        if written.saturating_sub(last_reported) >= 2 << 20 {
             last_reported = written;
             on_progress(DownloadProgress {
                 model_id: model_id.to_string(),
                 file: file.name.to_string(),
-                downloaded_bytes: bytes_before + written,
+                downloaded_bytes: bytes_before.saturating_add(written),
                 total_bytes,
             });
         }
@@ -209,7 +230,7 @@ fn download_one(
     on_progress(DownloadProgress {
         model_id: model_id.to_string(),
         file: file.name.to_string(),
-        downloaded_bytes: bytes_before + written,
+        downloaded_bytes: bytes_before.saturating_add(written),
         total_bytes,
     });
     Ok(())

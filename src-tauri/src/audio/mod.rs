@@ -57,31 +57,32 @@ pub enum AudioError {
 impl AudioError {
     /// The message shown to the user (plan §17) — no internals, and where
     /// possible a hint about what to do next.
+    #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            AudioError::PermissionDenied => {
+            Self::PermissionDenied => {
                 "LocalDictation needs microphone access. Grant it in System Settings › Privacy & Security › Microphone, then try again."
                     .into()
             }
-            AudioError::NoDevice => {
+            Self::NoDevice => {
                 "No microphone was found. Connect one and try again.".into()
             }
-            AudioError::DeviceUnavailable(_) => {
+            Self::DeviceUnavailable(_) => {
                 // The identifier is an opaque system string, so name the place
                 // to fix it instead of showing the id.
                 "The microphone you selected is no longer available. Choose another one in Settings › Audio."
                     .into()
             }
-            AudioError::Empty => {
+            Self::Empty => {
                 "No audio was captured. Hold the hotkey a moment longer while you speak.".into()
             }
-            AudioError::AlreadyRecording | AudioError::NotRecording => {
+            Self::AlreadyRecording | Self::NotRecording => {
                 "Recording got out of sync. Try again.".into()
             }
-            AudioError::DeviceQuery(_)
-            | AudioError::StreamStart(_)
-            | AudioError::Resample(_)
-            | AudioError::EngineGone => {
+            Self::DeviceQuery(_)
+            | Self::StreamStart(_)
+            | Self::Resample(_)
+            | Self::EngineGone => {
                 "The microphone could not be started. Check that no other app is using it.".into()
             }
         }

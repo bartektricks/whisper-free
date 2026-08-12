@@ -17,13 +17,12 @@ pub fn on_hotkey(app: &AppHandle, event: HotkeyEvent) {
         return;
     };
 
-    let mode = match ctx.settings.lock() {
-        Ok(settings) => settings.recording_mode,
-        Err(_) => {
-            tracing::error!("settings lock poisoned; ignoring hotkey");
-            return;
-        }
+    let Ok(settings) = ctx.settings.lock() else {
+        tracing::error!("settings lock poisoned; ignoring hotkey");
+        return;
     };
+    let mode = settings.recording_mode;
+    drop(settings);
 
     // Ask the audio engine rather than trusting our own state: it is the thing
     // that actually holds the microphone.
@@ -58,11 +57,7 @@ fn begin(app: &AppHandle, ctx: &AppContext) {
     // Test the actual precondition — a loaded recogniser — rather than the
     // state. After a previous failure the state is `Error`, which would make a
     // state-based check miss a genuinely missing model.
-    let has_model = ctx
-        .recognizer
-        .lock()
-        .map(|r| r.is_some())
-        .unwrap_or(false);
+    let has_model = ctx.recognizer.lock().is_ok_and(|r| r.is_some());
     if !has_model {
         // Recording audio we have no way to transcribe would waste the user's
         // breath, so refuse early and say where to fix it.
@@ -80,7 +75,7 @@ fn begin(app: &AppHandle, ctx: &AppContext) {
     // recording now would interleave two pipelines competing for the same
     // recogniser and the same clipboard.
     let current = ctx.state.lock().map(|s| s.state()).ok();
-    if matches!(current, Some(AppState::Transcribing) | Some(AppState::Inserting)) {
+    if matches!(current, Some(AppState::Transcribing | AppState::Inserting)) {
         tracing::debug!(event = "recording_start_ignored", reason = "pipeline_busy");
         return;
     }
@@ -116,11 +111,11 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
 
     // Too short to contain speech — almost always a mis-tap. Returning to Ready
     // silently is kinder than an error banner.
-    if audio.duration().as_millis() < crate::audio::MIN_USEFUL_DURATION_MS as u128 {
+    if audio.duration().as_millis() < u128::from(crate::audio::MIN_USEFUL_DURATION_MS) {
         tracing::info!(
             event = "recording_discarded",
             reason = "too_short",
-            duration_ms = audio.duration().as_millis() as u64
+            duration_ms = crate::millis(audio.duration())
         );
         set_app_state(app, AppState::Ready);
         return;
@@ -137,18 +132,17 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
     };
 
     let transcription = {
-        let mut guard = match ctx.recognizer.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                fail_app_state(app, "The speech engine hit an internal error. Restart LocalDictation.");
-                return;
-            }
+        let Ok(mut guard) = ctx.recognizer.lock() else {
+            fail_app_state(
+                app,
+                "The speech engine hit an internal error. Restart LocalDictation.",
+            );
+            return;
         };
 
-        match guard.as_mut() {
-            Some(recognizer) => recognizer.transcribe(&audio, &options),
-            None => Err(AsrError::ModelNotInstalled),
-        }
+        guard.as_mut().map_or(Err(AsrError::ModelNotInstalled), |r| {
+            r.transcribe(&audio, &options)
+        })
     };
 
     let transcription = match transcription {
@@ -163,8 +157,8 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
     // Durations and rates only — never the transcribed text (plan §18).
     tracing::info!(
         event = "transcription_completed",
-        audio_ms = transcription.audio_duration.as_millis() as u64,
-        inference_ms = transcription.duration.as_millis() as u64,
+        audio_ms = crate::millis(transcription.audio_duration),
+        inference_ms = crate::millis(transcription.duration),
         real_time_factor = transcription.real_time_factor(),
         chars = transcription.text.chars().count()
     );
@@ -181,13 +175,14 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
     }
 
     // Deterministic user replacements, applied before the text is delivered.
-    let final_text = match ctx.dictionary.lock() {
-        Ok(dictionary) => dictionary.apply(&transcription.text),
-        Err(_) => {
+    let raw_text = transcription.text;
+    let final_text = ctx.dictionary.lock().map_or_else(
+        |_| {
             tracing::error!("dictionary lock poisoned; inserting the raw transcription");
-            transcription.text.clone()
-        }
-    };
+            raw_text.clone()
+        },
+        |dictionary| dictionary.apply(&raw_text),
+    );
 
     set_app_state(app, AppState::Inserting);
 
@@ -217,6 +212,7 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
 }
 
 /// User-facing wording for an ASR failure (plan §17).
+#[must_use]
 pub fn asr_user_message(error: &AsrError) -> String {
     match error {
         AsrError::ModelNotInstalled => {

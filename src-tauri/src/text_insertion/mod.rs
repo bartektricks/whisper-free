@@ -17,16 +17,17 @@ pub enum InsertError {
 }
 
 impl InsertError {
+    #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            InsertError::PermissionDenied => {
+            Self::PermissionDenied => {
                 "LocalDictation needs Accessibility permission to paste text. Grant it in System Settings › Privacy & Security › Accessibility, then try again."
                     .into()
             }
-            InsertError::Clipboard(_) => {
+            Self::Clipboard(_) => {
                 "The text could not be placed on the clipboard. Try again.".into()
             }
-            InsertError::Keystroke(_) => {
+            Self::Keystroke(_) => {
                 "The text was copied to the clipboard, but pasting failed. Press Cmd+V to paste it."
                     .into()
             }
@@ -67,6 +68,14 @@ pub trait TextInserter: Send + Sync {
     /// On macOS this shows the Accessibility prompt. Safe to call repeatedly.
     fn request_permission(&self);
 
+    /// Put `text` into the focused application.
+    ///
+    /// # Errors
+    ///
+    /// [`InsertError::PermissionDenied`] when the OS refuses synthetic input,
+    /// [`InsertError::Clipboard`] when the clipboard cannot be written, and
+    /// [`InsertError::Keystroke`] when the paste cannot be sent — in which case
+    /// the text is still on the clipboard.
     fn insert(&self, text: &str) -> Result<InsertOutcome, InsertError>;
 }
 

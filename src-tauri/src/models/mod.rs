@@ -45,10 +45,12 @@ pub struct ModelDescriptor {
 }
 
 impl ModelDescriptor {
+    #[must_use]
     pub fn total_bytes(&self) -> u64 {
         self.files.iter().map(|f| f.size_bytes).sum()
     }
 
+    #[must_use]
     pub fn languages(&self) -> Vec<Language> {
         self.languages
             .iter()
@@ -131,6 +133,7 @@ pub const AVAILABLE_MODELS: &[ModelDescriptor] = &[ModelDescriptor {
     capabilities: PARAKEET_V3_CAPABILITIES,
 }];
 
+#[must_use]
 pub fn find(id: &str) -> Option<&'static ModelDescriptor> {
     AVAILABLE_MODELS.iter().find(|m| m.id == id)
 }
@@ -163,20 +166,21 @@ pub enum ModelError {
 }
 
 impl ModelError {
+    #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            ModelError::Unknown(_) => "That model is not one LocalDictation knows about.".into(),
-            ModelError::Download(_) => {
+            Self::Unknown(_) => "That model is not one LocalDictation knows about.".into(),
+            Self::Download(_) => {
                 "The download failed. Check your internet connection and try again.".into()
             }
-            ModelError::Checksum { .. } => {
+            Self::Checksum { .. } => {
                 "The downloaded model failed its integrity check and was discarded. Try downloading it again."
                     .into()
             }
-            ModelError::Io(_) => {
+            Self::Io(_) => {
                 "The model could not be saved. Check that there is enough free disk space.".into()
             }
-            ModelError::Cancelled => "The download was cancelled.".into(),
+            Self::Cancelled => "The download was cancelled.".into(),
         }
     }
 }
@@ -189,16 +193,19 @@ pub struct ModelStore {
 
 impl ModelStore {
     /// `<app data dir>/models`
+    #[must_use]
     pub fn new(app_data_dir: &Path) -> Self {
         Self {
             root: app_data_dir.join("models"),
         }
     }
 
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    #[must_use]
     pub fn dir_for(&self, id: &str) -> PathBuf {
         self.root.join(id)
     }
@@ -206,15 +213,16 @@ impl ModelStore {
     /// A model counts as installed only when every file is present at exactly
     /// the expected size. Size is a cheap proxy checked on every launch; the
     /// digest is verified at download time.
+    #[must_use]
     pub fn is_installed(&self, descriptor: &ModelDescriptor) -> bool {
         let dir = self.dir_for(descriptor.id);
-        descriptor.files.iter().all(|f| {
-            std::fs::metadata(dir.join(f.name))
-                .map(|m| m.len() == f.size_bytes)
-                .unwrap_or(false)
-        })
+        descriptor
+            .files
+            .iter()
+            .all(|f| std::fs::metadata(dir.join(f.name)).is_ok_and(|m| m.len() == f.size_bytes))
     }
 
+    #[must_use]
     pub fn bytes_on_disk(&self, descriptor: &ModelDescriptor) -> u64 {
         let dir = self.dir_for(descriptor.id);
         descriptor
@@ -225,6 +233,7 @@ impl ModelStore {
             .sum()
     }
 
+    #[must_use]
     pub fn info(&self, descriptor: &ModelDescriptor) -> ModelInfo {
         ModelInfo {
             id: descriptor.id.to_string(),
@@ -237,11 +246,18 @@ impl ModelStore {
         }
     }
 
+    #[must_use]
     pub fn list(&self) -> Vec<ModelInfo> {
         AVAILABLE_MODELS.iter().map(|m| self.info(m)).collect()
     }
 
     /// Delete an installed model and everything under its directory.
+    ///
+    /// Removing a model that is not installed is not an error.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::Io`] when the directory exists but cannot be deleted.
     pub fn remove(&self, id: &str) -> Result<(), ModelError> {
         let dir = self.dir_for(id);
         if !dir.exists() {

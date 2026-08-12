@@ -40,13 +40,14 @@ pub enum DictionaryError {
 }
 
 impl DictionaryError {
+    #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            DictionaryError::EmptyInput => {
+            Self::EmptyInput => {
                 "Enter the text the model produces before saving the entry.".into()
             }
-            DictionaryError::NotFound(_) => "That dictionary entry no longer exists.".into(),
-            DictionaryError::Write(_) | DictionaryError::Encode(_) => {
+            Self::NotFound(_) => "That dictionary entry no longer exists.".into(),
+            Self::Write(_) | Self::Encode(_) => {
                 "The dictionary could not be saved. Check that there is enough free disk space."
                     .into()
             }
@@ -78,6 +79,12 @@ impl Dictionary {
         })
     }
 
+    /// Write the dictionary to `path` via a temporary file and a rename.
+    ///
+    /// # Errors
+    ///
+    /// [`DictionaryError::Write`] when the file cannot be created or renamed,
+    /// [`DictionaryError::Encode`] when serialisation fails.
     pub fn save(&self, path: &Path) -> Result<(), DictionaryError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -90,10 +97,23 @@ impl Dictionary {
     }
 
     fn next_id(&self) -> u64 {
-        self.entries.iter().map(|e| e.id).max().unwrap_or(0) + 1
+        self.entries
+            .iter()
+            .map(|e| e.id)
+            .max()
+            .map_or(1, |highest| highest.saturating_add(1))
     }
 
-    pub fn add(&mut self, input: &str, replacement: &str) -> Result<DictionaryEntry, DictionaryError> {
+    /// Append a new entry.
+    ///
+    /// # Errors
+    ///
+    /// [`DictionaryError::EmptyInput`] when `input` is blank.
+    pub fn add(
+        &mut self,
+        input: &str,
+        replacement: &str,
+    ) -> Result<DictionaryEntry, DictionaryError> {
         let input = input.trim();
         if input.is_empty() {
             return Err(DictionaryError::EmptyInput);
@@ -108,6 +128,12 @@ impl Dictionary {
         Ok(entry)
     }
 
+    /// Replace the contents of the entry with `id`.
+    ///
+    /// # Errors
+    ///
+    /// [`DictionaryError::EmptyInput`] when `input` is blank, or
+    /// [`DictionaryError::NotFound`] when no entry has that id.
     pub fn update(
         &mut self,
         id: u64,
@@ -130,6 +156,11 @@ impl Dictionary {
         Ok(entry.clone())
     }
 
+    /// Delete the entry with `id`.
+    ///
+    /// # Errors
+    ///
+    /// [`DictionaryError::NotFound`] when no entry has that id.
     pub fn remove(&mut self, id: u64) -> Result<(), DictionaryError> {
         let before = self.entries.len();
         self.entries.retain(|e| e.id != id);
@@ -144,6 +175,7 @@ impl Dictionary {
     /// Matching is case-insensitive and anchored to word boundaries. Longer
     /// inputs are tried first, so "react native" beats a separate "react" rule.
     /// Replacements are never re-scanned, so a rule cannot feed itself.
+    #[must_use]
     pub fn apply(&self, text: &str) -> String {
         let mut rules: Vec<(&str, &str)> = self
             .entries
@@ -173,16 +205,19 @@ impl Dictionary {
         let mut out = String::with_capacity(text.len());
         let mut i = 0usize;
 
-        'outer: while i < chars.len() {
-            let at_start_boundary = i == 0 || !is_word_char(chars[i - 1]);
+        'outer: while let Some(&current) = chars.get(i) {
+            let at_start_boundary = i
+                .checked_sub(1)
+                .and_then(|previous| chars.get(previous))
+                .is_none_or(|c| !is_word_char(*c));
             if at_start_boundary {
                 for (needle, replacement) in &lowered_rules {
-                    let end = i + needle.len();
-                    if end > chars.len() || lowered[i..end] != needle[..] {
+                    let end = i.saturating_add(needle.len());
+                    if lowered.get(i..end) != Some(needle.as_slice()) {
                         continue;
                     }
                     // The character after the match must not continue the word.
-                    if end < chars.len() && is_word_char(chars[end]) {
+                    if chars.get(end).is_some_and(|c| is_word_char(*c)) {
                         continue;
                     }
                     out.push_str(replacement);
@@ -190,14 +225,15 @@ impl Dictionary {
                     continue 'outer;
                 }
             }
-            out.push(chars[i]);
-            i += 1;
+            out.push(current);
+            i = i.saturating_add(1);
         }
 
         out
     }
 }
 
+#[must_use]
 pub fn dictionary_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("dictionary.json")
 }
