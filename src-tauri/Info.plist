@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Shown in the macOS permission prompt the first time we open the mic. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>LocalDictation records your voice so it can transcribe it on this Mac. Audio never leaves your machine.</string>
+
+	<!-- Menu-bar app: no Dock icon, no application menu. -->
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>
