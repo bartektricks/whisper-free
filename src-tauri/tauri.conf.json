@@ -1,35 +1,45 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "whisper-free",
+  "productName": "LocalDictation",
   "version": "0.1.0",
-  "identifier": "com.bartek.whisper-free",
+  "identifier": "com.bartek.localdictation",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "bun run build",
-    "frontendDist": "../build"
+    "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "whisper-free",
-        "width": 800,
-        "height": 600
+        "label": "settings",
+        "title": "LocalDictation",
+        "width": 760,
+        "height": 620,
+        "minWidth": 640,
+        "minHeight": 480,
+        "resizable": true,
+        "visible": false,
+        "center": true,
+        "titleBarStyle": "Visible"
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost"
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["app", "dmg"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
   }
 }
