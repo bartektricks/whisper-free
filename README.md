@@ -120,12 +120,15 @@ Working today:
 - Local transcription with automatic language detection and punctuation
 - Word-boundary-aware dictionary replacements
 - Clipboard-based insertion into the focused app, with the clipboard restored
+- Start at login
 
-Not done yet: **Start at login** (§14) is stored but not yet registered with
-macOS, so it is deliberately absent from the UI rather than shown as a switch
-that does nothing. The reliability sweep of §21 milestone 10 — sleep/wake,
-device unplug mid-recording, very long recordings — has not been worked through
-end to end.
+Not verified yet: the reliability sweep of §21 milestone 10 has been worked
+through for rapid hotkey presses, empty and over-short recordings, missing
+models and repeated failures, but **sleep/wake, unplugging the microphone
+mid-recording, and very long recordings** still need a pass. Dictation into
+real apps (VS Code, Terminal, browsers) needs a human at the keyboard — the
+insertion code path is exercised, but only you can confirm the text lands
+where you expect.
 
 ### Checking it yourself
 

@@ -70,7 +70,11 @@ fn is_valid(from: AppState, to: AppState) -> bool {
         // Ready covers a transcription that produced no text.
         Transcribing => matches!(to, Inserting | Ready),
         Inserting => matches!(to, Ready),
-        Error => matches!(to, Ready | Uninitialized),
+        // Recording is reachable from Error because starting a new dictation is
+        // how a user retries. Requiring a Ready hop first created a race: the
+        // pipeline reports failures from a worker thread, so an error can land
+        // between the check and the transition.
+        Error => matches!(to, Ready | Uninitialized | Recording),
     }
 }
 
@@ -243,12 +247,26 @@ mod tests {
     }
 
     #[test]
-    fn error_cannot_jump_straight_back_into_recording() {
+    fn retrying_after_an_error_starts_recording_and_clears_the_message() {
+        // Pressing the hotkey again is the natural retry, and the failure
+        // message must not survive into the new attempt.
+        let mut sm = StateMachine::new();
+        sm.transition_to(Ready).unwrap();
+        sm.fail("No audio was captured");
+
+        let snap = sm.transition_to(Recording).unwrap();
+        assert_eq!(snap.state, Recording);
+        assert_eq!(snap.message, None);
+    }
+
+    #[test]
+    fn error_still_cannot_skip_into_the_middle_of_the_pipeline() {
+        // Allowing Error -> Recording must not open up Error -> Transcribing.
         let mut sm = StateMachine::new();
         sm.transition_to(Ready).unwrap();
         sm.fail("boom");
-        assert!(sm.transition_to(Recording).is_err());
-        assert!(sm.transition_to(Ready).is_ok());
+        assert!(sm.transition_to(Transcribing).is_err());
+        assert!(sm.transition_to(Inserting).is_err());
     }
 
     #[test]

@@ -102,6 +102,18 @@
     </Row>
   {/if}
 
+  <Row label="Startup" hint="Launches LocalDictation into the menu bar when you log in.">
+    <label class="checkbox">
+      <input
+        type="checkbox"
+        checked={$settings.start_at_login}
+        onchange={(e) =>
+          settings.update({ start_at_login: e.currentTarget.checked })}
+      />
+      Start at login
+    </label>
+  </Row>
+
   <Row label="Recording mode" hint={activeHint}>
     <div class="segmented" role="radiogroup" aria-label="Recording mode">
       {#each MODES as mode (mode.value)}
@@ -174,5 +186,11 @@
   .warn {
     color: var(--warn);
     font-size: 12px;
+  }
+
+  .checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
   }
 </style>

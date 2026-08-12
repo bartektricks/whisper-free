@@ -44,6 +44,12 @@ pub fn update_settings(
         tracing::info!(event = "hotkey_registered", accelerator = %settings.hotkey);
     }
 
+    // Same reasoning as the hotkey: only persist what the OS actually accepted.
+    let previous_autostart = ctx.settings.lock().map_err(lock_err)?.start_at_login;
+    if settings.start_at_login != previous_autostart {
+        apply_start_at_login(&app, settings.start_at_login)?;
+    }
+
     let path = crate::settings::settings_path(&ctx.data_dir);
     settings.save(&path).map_err(|e| {
         tracing::error!(error = %e, "could not save settings");
@@ -325,6 +331,27 @@ pub fn request_insert_permission(ctx: State<'_, AppContext>) -> CommandResult<()
 pub fn quit_app(app: AppHandle) {
     tracing::info!(event = "app_quit_requested");
     app.exit(0);
+}
+
+/// Register or unregister the app as a login item.
+fn apply_start_at_login(app: &AppHandle, enabled: bool) -> CommandResult<()> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let manager = app.autolaunch();
+    let result = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+
+    result.map_err(|e| {
+        tracing::warn!(error = %e, enabled, "could not change the login item");
+        "Starting at login could not be changed. You can add LocalDictation manually in System Settings › General › Login Items."
+            .to_string()
+    })?;
+
+    tracing::info!(event = "start_at_login_changed", enabled);
+    Ok(())
 }
 
 fn lock_err<T>(_: T) -> String {

@@ -31,7 +31,25 @@ pub fn on_hotkey(app: &AppHandle, event: HotkeyEvent) {
 
     match decide(mode, event, recording) {
         HotkeyAction::Start => begin(app, &ctx),
-        HotkeyAction::Stop => finish(app, &ctx),
+        HotkeyAction::Stop => {
+            // Inference takes hundreds of milliseconds and insertion sleeps
+            // while the paste lands. Running that here would block the thread
+            // delivering hotkey events, freezing the UI mid-dictation.
+            let worker_app = app.clone();
+            let spawned = std::thread::Builder::new()
+                .name("dictation".into())
+                .spawn(move || {
+                    if let Some(ctx) = worker_app.try_state::<AppContext>() {
+                        finish(&worker_app, &ctx);
+                    }
+                });
+
+            if let Err(e) = spawned {
+                tracing::error!(error = %e, "could not start the dictation thread");
+                let _ = ctx.audio.cancel();
+                fail_app_state(app, "Could not finish the recording. Please try again.");
+            }
+        }
         HotkeyAction::Ignore => {}
     }
 }
@@ -58,14 +76,18 @@ fn begin(app: &AppHandle, ctx: &AppContext) {
     // A previous failure left us in `Error`, from which `Recording` is not a
     // legal transition. Starting a new dictation is exactly the moment that
     // error stops being relevant, so clear it first.
-    let in_error = ctx
-        .state
-        .lock()
-        .map(|s| s.state() == AppState::Error)
-        .unwrap_or(false);
-    if in_error {
-        set_app_state(app, AppState::Ready);
+    // The previous dictation is still transcribing or pasting. Starting another
+    // recording now would interleave two pipelines competing for the same
+    // recogniser and the same clipboard.
+    let current = ctx.state.lock().map(|s| s.state()).ok();
+    if matches!(current, Some(AppState::Transcribing) | Some(AppState::Inserting)) {
+        tracing::debug!(event = "recording_start_ignored", reason = "pipeline_busy");
+        return;
     }
+
+    // No explicit error clearing here: `Error -> Recording` is a legal
+    // transition and clears the stale message on its own, which avoids racing
+    // with failures reported from the dictation worker thread.
 
     let device = ctx
         .settings

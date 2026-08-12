@@ -31,6 +31,7 @@ sha2 = "0.11.0"
 transcribe-rs = { version = "0.3.11", features = ["onnx", "ort-coreml"] }
 arboard = "3.6.1"
 core-graphics = "0.25.0"
+tauri-plugin-autostart = "2.5.1"
 
 [profile.release]
 codegen-units = 1
