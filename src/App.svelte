@@ -5,14 +5,18 @@
   import StatusBadge from "./components/common/StatusBadge.svelte";
   import GeneralSettings from "./components/Settings/GeneralSettings.svelte";
   import AudioSettings from "./components/Settings/AudioSettings.svelte";
+  import SpeechSettings from "./components/Settings/SpeechSettings.svelte";
+  import DictionarySettings from "./components/Settings/DictionarySettings.svelte";
+  import ModelSettings from "./components/Settings/ModelSettings.svelte";
 
   const settingsError = settings.error;
 
-  // Sections gain entries as their milestones land, so the UI never offers a
-  // panel that does nothing.
   const SECTIONS = [
     { id: "general", label: "General" },
     { id: "audio", label: "Audio" },
+    { id: "speech", label: "Speech" },
+    { id: "dictionary", label: "Dictionary" },
+    { id: "models", label: "Models" },
   ] as const;
 
   type SectionId = (typeof SECTIONS)[number]["id"];
@@ -51,6 +55,12 @@
         <GeneralSettings />
       {:else if active === "audio"}
         <AudioSettings />
+      {:else if active === "speech"}
+        <SpeechSettings />
+      {:else if active === "dictionary"}
+        <DictionarySettings />
+      {:else if active === "models"}
+        <ModelSettings />
       {/if}
     </div>
 

@@ -7,6 +7,17 @@
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+use crate::text_insertion::TextInserter;
+
+/// The text inserter for this platform.
+pub fn text_inserter() -> Box<dyn TextInserter> {
+    #[cfg(target_os = "macos")]
+    return Box::new(macos::text::MacOSTextInserter::new());
+
+    #[cfg(not(target_os = "macos"))]
+    compile_error!("LocalDictation currently only supports macOS");
+}
+
 /// Hide the app from the Dock and the app switcher, so it lives only in the
 /// menu bar.
 ///

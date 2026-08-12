@@ -50,3 +50,36 @@ export interface Language {
   code: string;
   name: string;
 }
+
+/** Mirrors `models::ModelInfo`. */
+export interface ModelInfo {
+  id: string;
+  name: string;
+  description: string;
+  size_bytes: number;
+  languages: Language[];
+  installed: boolean;
+  bytes_on_disk: number;
+}
+
+/** Mirrors `models::download::DownloadProgress`. */
+export interface DownloadProgress {
+  model_id: string;
+  file: string;
+  downloaded_bytes: number;
+  total_bytes: number;
+}
+
+/** Payload of the `model_download_failed` event. */
+export interface DownloadFailure {
+  model_id: string;
+  message: string;
+}
+
+/** Mirrors `dictionary::DictionaryEntry`. */
+export interface DictionaryEntry {
+  id: number;
+  input: string;
+  replacement: string;
+  enabled: boolean;
+}

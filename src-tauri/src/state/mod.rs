@@ -252,6 +252,19 @@ mod tests {
     }
 
     #[test]
+    fn a_new_dictation_can_start_after_a_failure() {
+        // The pipeline clears the error before recording again; without that
+        // step the mic would open while the state machine refused to follow.
+        let mut sm = StateMachine::new();
+        sm.transition_to(Ready).unwrap();
+        sm.fail("No audio was captured");
+
+        sm.clear_error(Ready).unwrap();
+        assert!(sm.transition_to(Recording).is_ok());
+        assert_eq!(sm.state(), Recording);
+    }
+
+    #[test]
     fn successful_transition_clears_a_stale_message() {
         let mut sm = StateMachine::new();
         sm.transition_to(Ready).unwrap();

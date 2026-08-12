@@ -108,10 +108,36 @@ Two boundaries are load-bearing and worth preserving:
 
 ## Status
 
-Under construction. Working today: menu-bar app and settings window, the state
-machine, settings persistence, and microphone capture with device selection and
-a level test. Still to come: global hotkey, model download, transcription, text
-insertion, and the dictionary.
+The full dictation loop is implemented: hotkey → record → transcribe →
+dictionary → paste.
+
+Working today:
+
+- Menu-bar app with a settings window, and an authoritative state machine
+- Configurable global hotkey, hold-to-talk or toggle
+- Microphone capture with device selection and a level test
+- Model download with progress, SHA-256 verification, and removal
+- Local transcription with automatic language detection and punctuation
+- Word-boundary-aware dictionary replacements
+- Clipboard-based insertion into the focused app, with the clipboard restored
+
+Not done yet: **Start at login** (§14) is stored but not yet registered with
+macOS, so it is deliberately absent from the UI rather than shown as a switch
+that does nothing. The reliability sweep of §21 milestone 10 — sleep/wake,
+device unplug mid-recording, very long recordings — has not been worked through
+end to end.
+
+### Checking it yourself
+
+```sh
+cd src-tauri
+cargo test                                          # 99 unit tests
+cargo run --example mic_check 3                     # capture path
+cargo run --release --example pipeline_check a.wav  # model + ASR + dictionary
+```
+
+`pipeline_check` installs the model if it is missing, so it doubles as a way to
+verify the download and checksum path from a terminal.
 
 ## Licence
 

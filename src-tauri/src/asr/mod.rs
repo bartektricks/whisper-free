@@ -4,6 +4,7 @@
 //! Model-specific detail — ONNX sessions, quantisation, chunking, tokenisers —
 //! lives behind `SpeechRecognizer` and must not leak past it.
 
+pub mod parakeet;
 pub mod types;
 
 pub use types::{

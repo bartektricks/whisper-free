@@ -25,6 +25,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 cpal = "0.18.1"
 rubato = "5.0.0"
+tauri-plugin-global-shortcut = "2.3.2"
+ureq = "3.4.0"
+sha2 = "0.11.0"
+transcribe-rs = { version = "0.3.11", features = ["onnx", "ort-coreml"] }
+arboard = "3.6.1"
+core-graphics = "0.25.0"
 
 [profile.release]
 codegen-units = 1

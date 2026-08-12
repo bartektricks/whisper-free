@@ -88,10 +88,33 @@ Ruled out as the cause: trailing silence and trailing room noise. JFK audio padd
 2/5/10/20 s of digital silence and of pink noise all transcribed perfectly. The trigger
 is specific pathological content in that segment, not silence in general.
 
+Both requirements below were later confirmed to work: the same 29 s clip that
+returned empty now transcribes in full through the shipped pipeline, because it
+crosses the chunking threshold.
+
 Two requirements follow, and both are architectural rather than cosmetic:
 
 1. The ASR layer **chunks long audio** (~15 s target, split on low-energy frames) instead of decoding one long buffer.
 2. An empty transcription is treated as a **distinct, surfaced outcome** — never a silent no-op. The user must never hold the key, speak, and get nothing with no explanation.
+
+## Sensitivity on marginal audio
+
+While validating the pipeline, one Polish clip decoded as `"Nie dobrze gubiłem"`
+instead of `"Dzień dobry, zgubiłem"`. The only difference between the two runs was
+the scale factor converting 16-bit samples to floats — `/32768` versus `/32767`, a
+relative amplitude change of 3×10⁻⁵. Restoring the second value restored the
+correct transcription exactly.
+
+Two things follow:
+
+- **Do not read much into a single clip.** On borderline audio the int8 model sits
+  close enough to a decision boundary that noise-level differences flip words. Judge
+  changes on a set of clips, not on one.
+- **Live capture is unaffected.** The microphone path is f32 end to end (cpal →
+  resampler → model) and never round-trips through 16-bit, so this particular
+  sensitivity does not arise in the app. It was an artefact of a WAV-reading test
+  helper. It is a reason to be careful about adding gain or normalisation steps
+  later, though.
 
 ## Decision
 

@@ -1,5 +1,7 @@
 //! macOS-specific platform glue.
 
+pub mod text;
+
 /// Switch the process to `NSApplicationActivationPolicyAccessory`.
 ///
 /// An Accessory app has no Dock icon and no application menu bar, which is what
