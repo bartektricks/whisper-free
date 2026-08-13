@@ -23,6 +23,16 @@ pub fn on_hotkey(app: &AppHandle, fired: &Shortcut, event: HotkeyEvent) {
         return;
     };
 
+    // Before the chord machinery, which knows nothing about this key and would
+    // classify it as `Ignore`. Only the press: the release is the same physical
+    // action and would cancel twice.
+    if crate::hotkey::is_cancel(fired) {
+        if event == HotkeyEvent::Pressed {
+            cancel(app, &ctx);
+        }
+        return;
+    }
+
     let Ok(arming) = ctx.chord.lock() else {
         tracing::error!("chord lock poisoned; ignoring hotkey");
         return;
@@ -75,11 +85,18 @@ fn trigger(app: &AppHandle, ctx: &AppContext, event: HotkeyEvent) {
             // while the paste lands. Running that here would block the thread
             // delivering hotkey events, freezing the UI mid-dictation.
             let worker_app = app.clone();
+            // Escape stays claimed across the whole run, not just the recording:
+            // transcription and the paste are both things a user may want to
+            // call off once they realise they misspoke.
             let spawned = std::thread::Builder::new()
                 .name("dictation".into())
                 .spawn(move || {
                     if let Some(ctx) = worker_app.try_state::<AppContext>() {
                         finish(&worker_app, &ctx);
+                        // The run is over however it ended, so Escape goes back
+                        // to the rest of the system. Not on the hotkey handler's
+                        // thread here, so the unregistration can be direct.
+                        release_cancel_key(&ctx);
                         release_finish(&ctx.finishing);
                     }
                 });
@@ -87,6 +104,7 @@ fn trigger(app: &AppHandle, ctx: &AppContext, event: HotkeyEvent) {
             if let Err(e) = spawned {
                 tracing::error!(error = %e, "could not start the dictation thread");
                 let _ = ctx.audio.cancel();
+                off_handler(app, "cancel-release", release_cancel_key);
                 release_finish(&ctx.finishing);
                 fail_app_state(app, "Could not finish the recording. Please try again.");
             }
@@ -294,6 +312,91 @@ fn release_finish(gate: &AtomicBool) {
     gate.store(false, Ordering::Release);
 }
 
+/// Claim Escape for the duration of a dictation.
+///
+/// Escape is everyone else's key; we borrow it only while there is something to
+/// abandon. The flag makes the borrow single-entry, so two starts cannot leave
+/// two registrations behind — or one release cancel out the other's claim.
+///
+/// Registration goes through [`off_handler`] because this is reached from the
+/// hotkey handler, where registering anything deadlocks. A failure is a warning
+/// and nothing more: not being able to cancel is a smaller problem than not
+/// being able to dictate.
+fn arm_cancel_key(app: &AppHandle) {
+    let Some(ctx) = app.try_state::<AppContext>() else {
+        return;
+    };
+    if ctx
+        .cancel_key_held
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    off_handler(app, "cancel-arm", |ctx| {
+        if let Err(e) = ctx.hotkeys.add(crate::hotkey::CANCEL_ACCELERATOR) {
+            tracing::warn!(event = "cancel_key_unavailable", error = %e);
+            ctx.cancel_key_held.store(false, Ordering::Release);
+        }
+    });
+}
+
+/// Give Escape back to the rest of the system.
+///
+/// Safe to call from anywhere and as often as you like; only the thread that
+/// wins the flag issues the unregistration.
+fn release_cancel_key(ctx: &AppContext) {
+    if ctx
+        .cancel_key_held
+        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    if let Err(e) = ctx.hotkeys.remove(crate::hotkey::CANCEL_ACCELERATOR) {
+        tracing::warn!(event = "cancel_key_release_failed", error = %e);
+    }
+}
+
+/// Abandon the dictation in progress, if there is one.
+///
+/// Two cases, and the `finishing` gate is what tells them apart. Holding it
+/// means we own the audio engine and can stop it here. Failing to take it means
+/// the pipeline is already past recording — mid-inference, or mid-paste — where
+/// there is nothing to interrupt. Setting [`AppContext::cancelled`] is then the
+/// whole of the cancellation: [`finish`] checks it before it does anything the
+/// user would see.
+fn cancel(app: &AppHandle, ctx: &AppContext) {
+    ctx.cancelled.store(true, Ordering::Release);
+
+    if !claim_finish(&ctx.finishing) {
+        tracing::info!(event = "dictation_cancelled", stage = "pipeline");
+        return;
+    }
+
+    if ctx.audio.is_recording() {
+        if let Err(e) = ctx.audio.cancel() {
+            tracing::warn!(event = "recording_cancel_failed", error = %e);
+        }
+        tracing::info!(event = "dictation_cancelled", stage = "recording");
+        // Straight back to Ready: nothing was transcribed, so there is nothing
+        // to report and no error to show.
+        set_app_state(app, AppState::Ready);
+    }
+
+    // On the hotkey handler's thread, so the unregistration cannot happen here.
+    off_handler(app, "cancel-release", |ctx| {
+        release_cancel_key(ctx);
+        release_finish(&ctx.finishing);
+    });
+}
+
+/// Has Escape been pressed since this run started?
+fn is_cancelled(ctx: &AppContext) -> bool {
+    ctx.cancelled.load(Ordering::Acquire)
+}
+
 fn begin(app: &AppHandle, ctx: &AppContext) {
     // Test the actual precondition — a loaded recogniser — rather than the
     // state. After a previous failure the state is `Error`, which would make a
@@ -337,10 +440,22 @@ fn begin(app: &AppHandle, ctx: &AppContext) {
         return;
     }
 
+    // Fresh run, so any Escape from the previous one is history.
+    ctx.cancelled.store(false, Ordering::Release);
+    arm_cancel_key(app);
+
     set_app_state(app, AppState::Recording);
 }
 
 fn finish(app: &AppHandle, ctx: &AppContext) {
+    // Escape landed between the hotkey and this thread starting. The audio is
+    // already discarded, so there is nothing left to do.
+    if is_cancelled(ctx) {
+        tracing::info!(event = "dictation_cancelled", stage = "before_stop");
+        set_app_state(app, AppState::Ready);
+        return;
+    }
+
     let audio = match ctx.audio.stop() {
         Ok(audio) => audio,
         Err(e) => {
@@ -412,6 +527,16 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
             app,
             "Nothing was recognised in that recording. Try speaking a little louder or for longer.",
         );
+        return;
+    }
+
+    // The last point where cancelling still means anything: after this the text
+    // is on its way to someone else's window. Inference cannot be interrupted
+    // part-way, so Escape during it lands here — the work was wasted, but the
+    // paste the user called off does not happen.
+    if is_cancelled(ctx) {
+        tracing::info!(event = "dictation_cancelled", stage = "before_insert");
+        set_app_state(app, AppState::Ready);
         return;
     }
 

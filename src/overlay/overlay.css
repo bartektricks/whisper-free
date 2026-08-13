@@ -1,0 +1,58 @@
+/*
+ * Deliberately not an import of `app.css`: that sheet paints `body` with
+ * `--bg`, which would fill the whole overlay window opaque and square off the
+ * corners the transparent window exists to avoid. Only the handful of tokens
+ * the pill actually uses are repeated here.
+ *
+ * The pill is drawn dark in both colour schemes. It floats over an arbitrary
+ * application rather than over our own background, so it needs to read as an
+ * OS-level HUD, not as a page element — the same reasoning macOS applies to
+ * its own volume and brightness overlays.
+ */
+:root {
+  --pill: rgba(28, 28, 30, 0.9);
+  --pill-border: rgba(255, 255, 255, 0.14);
+  --pill-text: #f5f5f7;
+  --pill-dim: #a1a1a6;
+  --accent: #0a84ff;
+  --err: #ff6961;
+
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#overlay {
+  height: 100%;
+  margin: 0;
+  /* The window is transparent; anything painted here would become a visible
+     rectangle around the rounded pill. */
+  background: transparent;
+}
+
+/*
+ * The room for the pill's drop shadow is padding here, not margin on the pill
+ * itself. A `height: 100%` pill with a margin measures 100% of the window *plus*
+ * the margins, so its bottom edge lands outside the window and is clipped.
+ */
+#overlay {
+  display: flex;
+  padding: 8px;
+}
+
+body {
+  color: var(--pill-text);
+  /* The window ignores cursor events entirely, but a stray selection or
+     caret would still look wrong if that ever changed. */
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}

@@ -9,6 +9,8 @@ const DEFAULTS: Settings = {
   model_id: "parakeet-tdt-0.6b-v3",
   language: { kind: "auto" },
   start_at_login: false,
+  show_overlay: true,
+  overlay_anchor: "bottom_centre",
 };
 
 function createSettingsStore() {

@@ -20,6 +20,18 @@ export type RecordingMode = "hold_to_talk" | "toggle";
 /** Mirrors `asr::types::LanguageSelection` (serde tag/content). */
 export type LanguageSelection = { kind: "auto" } | { kind: "fixed"; code: string };
 
+/** Mirrors `overlay::OverlayAnchor`. */
+export type OverlayAnchor =
+  | "top_left"
+  | "top_centre"
+  | "top_right"
+  | "centre_left"
+  | "centre"
+  | "centre_right"
+  | "bottom_left"
+  | "bottom_centre"
+  | "bottom_right";
+
 /** Mirrors `settings::Settings`. */
 export interface Settings {
   hotkey: string;
@@ -28,6 +40,8 @@ export interface Settings {
   model_id: string;
   language: LanguageSelection;
   start_at_login: boolean;
+  show_overlay: boolean;
+  overlay_anchor: OverlayAnchor;
 }
 
 /** Mirrors `audio::AudioDevice`. */

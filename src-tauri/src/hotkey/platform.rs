@@ -48,6 +48,22 @@ pub trait GlobalHotkeys: Send + Sync {
     fn unregister_all(&self) -> Result<(), HotkeyError>;
 }
 
+/// The key that abandons a dictation in progress.
+///
+/// Held from the OS only while a dictation is actually running. Registering it
+/// permanently would swallow Escape system-wide, which is not a trade anyone
+/// would accept for a dictation app.
+pub const CANCEL_ACCELERATOR: &str = "Escape";
+
+/// Is `fired` the cancel key, pressed on its own?
+///
+/// Modifiers matter: `Cmd+Escape` is somebody else's shortcut, and we only ever
+/// register the bare key.
+#[must_use]
+pub fn is_cancel(fired: &Shortcut) -> bool {
+    parse(CANCEL_ACCELERATOR).is_ok_and(|cancel| cancel == *fired)
+}
+
 /// Parse an accelerator string such as `"Alt+Space"`.
 ///
 /// # Errors
@@ -108,5 +124,40 @@ impl GlobalHotkeys for TauriGlobalHotkeys {
             .global_shortcut()
             .unregister_all()
             .map_err(|e| HotkeyError::Registration(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cancel_accelerator_parses() {
+        assert!(parse(CANCEL_ACCELERATOR).is_ok());
+    }
+
+    #[test]
+    fn a_bare_escape_is_the_cancel_key() {
+        let escape = parse(CANCEL_ACCELERATOR).unwrap();
+        assert!(is_cancel(&escape));
+    }
+
+    /// Escape with a modifier belongs to someone else, and is never something
+    /// we registered.
+    #[test]
+    fn escape_with_a_modifier_is_not_the_cancel_key() {
+        for accelerator in ["Cmd+Escape", "Ctrl+Escape", "Alt+Escape", "Shift+Escape"] {
+            let shortcut = parse(accelerator).unwrap();
+            assert!(!is_cancel(&shortcut), "{accelerator} matched");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_hotkey_is_not_the_cancel_key() {
+        for accelerator in ["Alt+Space", "Cmd+K", "Escape+A"] {
+            if let Ok(shortcut) = parse(accelerator) {
+                assert!(!is_cancel(&shortcut), "{accelerator} matched");
+            }
+        }
     }
 }

@@ -55,3 +55,14 @@ pub mod strings {
 pub fn become_menu_bar_app(_app: &mut tauri::App) {
     tracing::debug!("no activation policy to set on Windows");
 }
+
+/// Nothing to do: `HWND_TOPMOST`, which is what Tauri's `always_on_top` sets,
+/// already puts the window above every other application. Windows has
+/// no equivalent of a full-screen Space to be excluded from.
+///
+/// The exception is a game holding exclusive fullscreen through DXGI, which
+/// owns the display outright. Nothing a normal window does can appear over
+/// that, so there is nothing to attempt here.
+pub fn float_above_other_windows(_window: &tauri::WebviewWindow) {
+    tracing::debug!("topmost already covers full-screen windows on Windows");
+}

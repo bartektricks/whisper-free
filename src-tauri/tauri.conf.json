@@ -22,8 +22,29 @@
         "visible": false,
         "center": true,
         "titleBarStyle": "Visible"
+      },
+      {
+        "label": "overlay",
+        "url": "overlay.html",
+        "title": "LocalDictation overlay",
+        "width": 224,
+        "height": 60,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost"
     }

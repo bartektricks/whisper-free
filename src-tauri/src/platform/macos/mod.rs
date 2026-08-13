@@ -6,6 +6,9 @@
 
 pub mod replay;
 pub mod text;
+pub mod window;
+
+pub use window::float_above_other_windows;
 
 use super::TrayAccelerators;
 

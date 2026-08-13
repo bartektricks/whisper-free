@@ -33,6 +33,7 @@ pub mod dictionary;
 pub mod hotkey;
 pub mod logging;
 pub mod models;
+pub mod overlay;
 pub mod platform;
 pub mod settings;
 pub mod state;
@@ -85,6 +86,12 @@ pub struct AppContext {
     /// events can arrive at once from different threads. Without this, two of
     /// them would both see `is_recording()` and both start a pipeline.
     pub finishing: AtomicBool,
+    /// Set when Escape abandons the run in progress, so a transcription that is
+    /// already under way is thrown away instead of pasted.
+    pub cancelled: AtomicBool,
+    /// Whether Escape is currently claimed from the OS. Escape belongs to every
+    /// other app the rest of the time, so add and remove must never double up.
+    pub cancel_key_held: AtomicBool,
     /// Kept alive for the process lifetime so buffered log lines are flushed.
     _log_guard: Option<WorkerGuard>,
 }
@@ -149,6 +156,9 @@ fn publish_state(app: &AppHandle, ctx: &AppContext, snapshot: &StateSnapshot) {
     if let Err(e) = app.emit(EVENT_STATE_CHANGED, snapshot) {
         tracing::warn!(error = %e, "could not emit state change");
     }
+    // After the emit, so the overlay webview has already been handed the new
+    // snapshot by the time its window appears.
+    overlay::apply(app, ctx, snapshot);
 }
 
 /// Build a recogniser for a model descriptor.
@@ -277,6 +287,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         dictionary: Mutex::new(dictionary),
         inserter: platform::text_inserter(app.handle().clone()),
         finishing: AtomicBool::new(false),
+        cancelled: AtomicBool::new(false),
+        cancel_key_held: AtomicBool::new(false),
         _log_guard: log_guard,
     });
 
@@ -302,6 +314,20 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             let message = e.user_message();
             fail_app_state(app.handle(), message);
         }
+    }
+
+    // Clicks must reach whatever is underneath the indicator. There is no
+    // config key for this, so it is set once here rather than in
+    // `tauri.conf.json` alongside the rest of the overlay's window options.
+    if let Some(window) = app.get_webview_window(overlay::WINDOW_LABEL) {
+        if let Err(e) = window.set_ignore_cursor_events(true) {
+            tracing::error!(error = %e, "overlay will intercept clicks");
+        }
+        // `alwaysOnTop` only ties with other floating windows on macOS, so
+        // another app's picture-in-picture would cover the indicator.
+        platform::float_above_other_windows(&window);
+    } else {
+        tracing::error!("overlay window is missing from the app config");
     }
 
     // Loading takes about a second and ~1.4 GB, so it happens off the startup
