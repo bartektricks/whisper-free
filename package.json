@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "clippy": "cargo clippy --manifest-path ./src-tauri/Cargo.toml",
+    "clippy:fix": "cargo clippy --manifest-path ./src-tauri/Cargo.toml --fix"
   },
   "license": "MIT",
   "dependencies": {
