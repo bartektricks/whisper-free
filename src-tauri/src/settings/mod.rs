@@ -18,8 +18,10 @@ pub enum RecordingMode {
 /// The model shipped as the default choice. Not downloaded until the user asks.
 pub const DEFAULT_MODEL_ID: &str = "parakeet-tdt-0.6b-v3";
 
-/// `Option+Space`, written in the accelerator syntax Tauri understands.
-pub const DEFAULT_HOTKEY: &str = "Alt+Space";
+/// The hotkey a fresh install starts with, in the accelerator syntax Tauri
+/// understands. Chosen per platform, since a combination that is free on one
+/// system is reserved on another.
+pub const DEFAULT_HOTKEY: &str = crate::platform::default_hotkey();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -126,7 +128,7 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.recording_mode, RecordingMode::HoldToTalk);
         assert_eq!(s.language, LanguageSelection::Auto);
-        assert_eq!(s.hotkey, "Alt+Space");
+        assert_eq!(s.hotkey, DEFAULT_HOTKEY);
         assert!(!s.start_at_login);
         assert_eq!(s.input_device, None);
     }

@@ -1,0 +1,69 @@
+name: CI
+
+# Checks only — no bundling. The point of the matrix is that `platform/mod.rs`
+# selects its backend with `#[cfg_attr(path)]`, so neither developer machine
+# ever compiles the other platform's code. Without both runners, a Windows-only
+# or macOS-only compile error can sit undetected for weeks.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  frontend:
+    name: Frontend typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # The frontend is only built here because `tauri::generate_context!`
+      # reads `frontendDist`, which must exist for the crate to compile.
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # `ort-sys` downloads a prebuilt ONNX Runtime on a cold build, so a
+          # cache miss costs a few hundred MB of transfer as well as compile
+          # time.
+          key: ${{ matrix.os }}
+
+      - name: Clippy
+        working-directory: src-tauri
+        # `-D warnings` goes here rather than in RUSTFLAGS, which would also
+        # apply to every dependency and fail on warnings we cannot fix.
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: src-tauri
+        # No microphone, no model and no window server on a runner — which is
+        # exactly why the examples are outside `cargo test` and why the decision
+        # logic is split out from the OS calls it drives.
+        run: cargo test

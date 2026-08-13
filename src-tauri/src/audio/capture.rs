@@ -219,8 +219,13 @@ fn host_devices() -> Result<Vec<Device>, AudioError> {
         .map_err(|e| AudioError::DeviceQuery(e.to_string()))
 }
 
-/// cpal identifies devices by a `DeviceId` that is stable across reboots; the
-/// `Display` name is for humans only.
+/// cpal identifies devices by a `DeviceId`; the `Display` name is for humans
+/// only.
+///
+/// CoreAudio and WASAPI ids survive reboots and reconnection, which is what
+/// makes them safe to persist in settings. ALSA ids are positional, so a Linux
+/// backend would need to re-check this assumption — a device that moves is
+/// reported as unavailable rather than silently swapped, so it fails loudly.
 fn device_id(device: &Device) -> Option<String> {
     device.id().ok().map(|id| id.to_string())
 }
@@ -263,7 +268,9 @@ fn find_device(requested: Option<&str>) -> Result<Device, AudioError> {
 /// Choose a capture format, preferring one that needs no resampling.
 ///
 /// CoreAudio will hand us 16 kHz directly on most built-in microphones, which
-/// skips a conversion step and the quality loss that comes with it.
+/// skips a conversion step and the quality loss that comes with it. WASAPI in
+/// shared mode will not, so on Windows the resampler is the normal path rather
+/// than the exception; the cost is negligible against inference.
 fn pick_config(device: &Device) -> Result<SupportedStreamConfig, AudioError> {
     if let Ok(ranges) = device.supported_input_configs() {
         let native_16k = ranges
@@ -310,10 +317,18 @@ fn start_stream(requested: Option<&str>) -> Result<Active, AudioError> {
         tracing::error!(event = "audio_stream_error", device = %error_name, error = %e);
     };
 
+    // CoreAudio hands back f32 or i16, but WASAPI and ALSA routinely offer the
+    // wider integer formats too. Each arm converts straight to f32 — decision
+    // 0001 found that a detour through 16-bit changes what the model hears.
     let stream = match sample_format {
         SampleFormat::F32 => build_stream::<f32>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::F64 => build_stream::<f64>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::I8 => build_stream::<i8>(&device, config, samples.clone(), cap, on_error),
         SampleFormat::I16 => build_stream::<i16>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::I32 => build_stream::<i32>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::U8 => build_stream::<u8>(&device, config, samples.clone(), cap, on_error),
         SampleFormat::U16 => build_stream::<u16>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::U32 => build_stream::<u32>(&device, config, samples.clone(), cap, on_error),
         other => {
             return Err(AudioError::StreamStart(format!(
                 "unsupported sample format {other:?}"
@@ -363,20 +378,129 @@ where
             on_error,
             Some(Duration::from_secs(2)),
         )
-        .map_err(|e| map_build_error(&e, device))
+        .map_err(|e| map_build_error(&e, &device.to_string()))
 }
 
+/// `E_ACCESSDENIED`, as `std::io::Error` renders it.
+///
+/// WASAPI reports a microphone-privacy refusal with this HRESULT, and cpal
+/// builds the message with `io::Error::from_raw_os_error`, whose `Display`
+/// appends the raw code. The sentence in front of the code comes from
+/// `FormatMessageW` and is localised; the code is not.
+const WINDOWS_ACCESS_DENIED: &str = "(os error -2147024891)";
+
 /// Turn a cpal build failure into something the app can act on.
-fn map_build_error(e: &cpal::Error, device: &Device) -> AudioError {
-    let text = e.to_string();
-    // cpal surfaces a TCC refusal as a generic backend error, so match on the
-    // message. When in doubt this stays a generic start failure.
-    let lowered = text.to_lowercase();
-    if lowered.contains("permission") || lowered.contains("not authorized") {
-        return AudioError::PermissionDenied;
+///
+/// cpal classifies every backend error into an [`cpal::ErrorKind`], so the kind
+/// is the source of truth — never the message, which is whatever the backend's
+/// own `Display` says (`"Unauthorized"` for a macOS TCC refusal, a localised
+/// sentence on Windows). `ErrorKind` is `#[non_exhaustive]`, and anything not
+/// named here stays a generic start failure.
+///
+/// The one gap is WASAPI: it has no arm for `E_ACCESSDENIED` and reports the
+/// privacy refusal as `BackendError`, so that single case is recovered from the
+/// raw code in the message.
+///
+/// Takes the device name rather than the `Device` so it can be tested; a
+/// `cpal::Device` cannot be constructed without a host.
+fn map_build_error(e: &cpal::Error, device_name: &str) -> AudioError {
+    match e.kind() {
+        cpal::ErrorKind::PermissionDenied => AudioError::PermissionDenied,
+        cpal::ErrorKind::DeviceNotAvailable => {
+            AudioError::DeviceUnavailable(device_name.to_owned())
+        }
+        cpal::ErrorKind::BackendError
+            if e.message()
+                .is_some_and(|m| m.contains(WINDOWS_ACCESS_DENIED)) =>
+        {
+            AudioError::PermissionDenied
+        }
+        // `DeviceBusy` lands here on purpose: `StreamStart`'s user message
+        // already says to check whether another app holds the microphone.
+        _ => AudioError::StreamStart(e.to_string()),
     }
-    if lowered.contains("device not available") || lowered.contains("devicenotavailable") {
-        return AudioError::DeviceUnavailable(device.to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpal::{Error, ErrorKind};
+
+    /// What `coreaudio-rs` renders `kAudioUnitErr_Unauthorized` as. The word is
+    /// one token, so no substring of it reads as "not authorized".
+    const MACOS_TCC_REFUSAL: &str = "Unauthorized";
+
+    #[test]
+    fn a_macos_tcc_refusal_tells_the_user_to_grant_access() {
+        let e = Error::with_message(ErrorKind::PermissionDenied, MACOS_TCC_REFUSAL);
+        assert_eq!(
+            map_build_error(&e, "Built-in"),
+            AudioError::PermissionDenied
+        );
+        // The point of the mapping: the message names where to fix it.
+        assert!(map_build_error(&e, "Built-in")
+            .user_message()
+            .contains(crate::platform::strings::MICROPHONE_SETTINGS));
     }
-    AudioError::StreamStart(text)
+
+    #[test]
+    fn a_windows_privacy_refusal_is_read_from_the_code_not_the_sentence() {
+        // cpal has no arm for E_ACCESSDENIED, so it arrives as a backend error.
+        let english = Error::with_message(
+            ErrorKind::BackendError,
+            format!("Access is denied. {WINDOWS_ACCESS_DENIED}"),
+        );
+        // FormatMessageW is localised; the appended code is not.
+        let polish = Error::with_message(
+            ErrorKind::BackendError,
+            format!("Odmowa dostępu. {WINDOWS_ACCESS_DENIED}"),
+        );
+        assert_eq!(
+            map_build_error(&english, "Yeti"),
+            AudioError::PermissionDenied
+        );
+        assert_eq!(
+            map_build_error(&polish, "Yeti"),
+            AudioError::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn an_unclassified_backend_error_is_not_mistaken_for_a_refusal() {
+        let e = Error::with_message(ErrorKind::BackendError, "AUDCLNT_E_CPUUSAGE_EXCEEDED");
+        assert!(matches!(
+            map_build_error(&e, "Yeti"),
+            AudioError::StreamStart(_)
+        ));
+    }
+
+    #[test]
+    fn an_unplugged_device_is_named_so_the_log_says_which_one() {
+        // The backend text says nothing about availability; only the kind does.
+        let e = Error::with_message(
+            ErrorKind::DeviceNotAvailable,
+            "No matching default audio unit found",
+        );
+        assert_eq!(
+            map_build_error(&e, "Yeti"),
+            AudioError::DeviceUnavailable("Yeti".into())
+        );
+    }
+
+    #[test]
+    fn a_busy_device_stays_a_generic_start_failure() {
+        let e = Error::new(ErrorKind::DeviceBusy);
+        let mapped = map_build_error(&e, "Yeti");
+        assert!(matches!(mapped, AudioError::StreamStart(_)));
+        assert!(mapped.user_message().contains("no other app"));
+    }
+
+    #[test]
+    fn an_unsupported_config_does_not_blame_permissions() {
+        let e = Error::with_message(ErrorKind::UnsupportedConfig, "Unsupported sample rate");
+        assert!(matches!(
+            map_build_error(&e, "Yeti"),
+            AudioError::StreamStart(_)
+        ));
+    }
 }

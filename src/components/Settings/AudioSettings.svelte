@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import Row from "../common/Row.svelte";
   import { settings } from "../../stores/settings";
+  import { microphoneSettings, systemName } from "../../lib/platform";
   import type { AudioDevice, MicrophoneTest } from "../../types";
 
   let devices = $state<AudioDevice[]>([]);
@@ -58,7 +59,7 @@
 
   <Row
     label="Microphone"
-    hint="System default follows whatever macOS is using, so it keeps working when you plug in headphones."
+    hint="System default follows whatever {systemName()} is using, so it keeps working when you plug in headphones."
   >
     <select value={$settings.input_device ?? ""} onchange={selectDevice}>
       <option value="">System default</option>
@@ -96,7 +97,7 @@
         <p class="error">
           Recorded {(result.duration_ms / 1000).toFixed(1)}s but heard only silence. Check
           that the right microphone is selected and that LocalDictation is allowed in
-          System Settings › Privacy &amp; Security › Microphone.
+          {microphoneSettings()}.
         </p>
       {/if}
     {/if}

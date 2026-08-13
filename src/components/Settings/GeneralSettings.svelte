@@ -1,14 +1,29 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import Row from "../common/Row.svelte";
   import { settings } from "../../stores/settings";
-  import { toAccelerator, formatAccelerator } from "../../lib/hotkey";
+  import { toAccelerator, formatAccelerator, toChord } from "../../lib/hotkey";
+  import { trayName } from "../../lib/platform";
   import type { RecordingMode } from "../../types";
 
-  let capturing = $state(false);
+  /**
+   * How long to wait after the first combination before deciding it was the
+   * whole hotkey.
+   *
+   * A chord is typed as one gesture, so this only has to outlast the gap
+   * between two deliberate presses. The captured combination is on screen
+   * immediately either way — nothing visible is waiting on this.
+   */
+  const CHORD_WINDOW_MS = 900;
+
+  /** `off` · `first` waiting for a combination · `second` waiting to see whether a chord follows. */
+  let capturing = $state<"off" | "first" | "second">("off");
+  let firstStep = $state<string | null>(null);
   let captureError = $state<string | null>(null);
   let canInsert = $state(true);
+  let captureButton = $state<HTMLButtonElement | null>(null);
+  let chordTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function checkPermission() {
     canInsert = await invoke<boolean>("can_insert_text");
@@ -22,34 +37,147 @@
 
   onMount(checkPermission);
 
+  /**
+   * Capture listens on the window rather than on the button.
+   *
+   * WKWebView follows the macOS convention of *not* focusing a button when it
+   * is clicked, so a `keydown` bound to the button never fires there and the
+   * shortcut could never be changed. Focus is still requested explicitly, for
+   * the focus ring and for keyboard users.
+   */
   function startCapture() {
+    if (capturing !== "off") {
+      cancelCapture(); // a second click is how you back out with the mouse
+      return;
+    }
     captureError = null;
-    capturing = true;
+    capturing = "first";
+    captureButton?.focus();
+    // The live shortcut is claimed system-wide, so without this the one
+    // combination the user most likely wants to re-record — the current one —
+    // would start a dictation instead of reaching this recorder.
+    void invoke("suspend_hotkey");
   }
+
+  /** Leave capture without choosing anything, and give the hotkey back. */
+  function cancelCapture() {
+    resetCapture();
+    void resumeHotkey();
+  }
+
+  function resetCapture() {
+    clearChordTimer();
+    capturing = "off";
+    firstStep = null;
+  }
+
+  async function resumeHotkey() {
+    try {
+      await invoke("resume_hotkey");
+    } catch (e) {
+      // The app is now without a working shortcut, which the user cannot
+      // discover any other way.
+      captureError = String(e);
+    }
+  }
+
+  /**
+   * Leaving the window ends capture rather than leaving a global key trap armed
+   * out of sight — but a combination already pressed is the user's answer, so
+   * it is saved rather than dropped.
+   */
+  function onWindowBlur() {
+    const pending = capturing === "second" ? firstStep : null;
+    if (!pending) {
+      cancelCapture();
+      return;
+    }
+    resetCapture();
+    void commit(pending);
+  }
+
+  function clearChordTimer() {
+    if (chordTimer !== null) clearTimeout(chordTimer);
+    chordTimer = null;
+  }
+
+  // Switching settings sections destroys this component. A timer outliving it
+  // would save a hotkey for a pane the user has left, and a capture left open
+  // would strand the app with no shortcut registered at all.
+  onDestroy(() => {
+    clearChordTimer();
+    if (capturing !== "off") void resumeHotkey();
+  });
 
   async function onCaptureKey(event: KeyboardEvent) {
     event.preventDefault();
     event.stopPropagation();
 
+    // A held key repeats, and the listener is only detached on the next render.
+    if (event.repeat) return;
+
     if (event.key === "Escape") {
-      capturing = false;
+      cancelCapture();
       return;
     }
 
-    const accelerator = toAccelerator(event);
+    // A chord's second step may be a bare key — `⌘K K` is the shape people
+    // expect — because it is only claimed while the chord window is open.
+    const accelerator = toAccelerator(event, { bare: capturing === "second" });
     // Modifier-only presses land here while the user is still reaching for the
     // final key; keep listening rather than rejecting them.
     if (!accelerator) return;
 
-    capturing = false;
-    const previous = $settings.hotkey;
-    await settings.update({ hotkey: accelerator });
-    // The backend refuses shortcuts another app owns, so a value that did not
-    // change means it was rejected.
-    if ($settings.hotkey === previous && previous !== accelerator) {
-      captureError = `${formatAccelerator(accelerator)} is already in use by another app.`;
+    // The second combination of a chord.
+    if (capturing === "second" && firstStep) {
+      const chord = toChord(firstStep, accelerator);
+      resetCapture();
+      await commit(chord);
+      return;
     }
+
+    // The first, which may turn out to be the whole hotkey. It shows on the
+    // button straight away; only the save waits to see whether a second
+    // follows, so there is nothing to watch while the window runs.
+    firstStep = accelerator;
+    capturing = "second";
+    chordTimer = setTimeout(() => {
+      chordTimer = null;
+      const single = firstStep;
+      resetCapture();
+      if (single) void commit(single);
+    }, CHORD_WINDOW_MS);
   }
+
+  async function commit(hotkey: string) {
+    captureError = await settings.update({ hotkey });
+    // Shown beside the button that caused it, so the window-wide banner would
+    // only be the same sentence a second time.
+    if (captureError) settings.error.set(null);
+
+    // Last, and awaited, so this cannot race the registration `update` just
+    // did. On a rejection it puts the previous shortcut back, since the
+    // suspend that opened this capture released it.
+    await resumeHotkey();
+  }
+
+  const captureLabel = $derived.by(() => {
+    if (capturing === "first") return "Press a shortcut…";
+    if (capturing === "second" && firstStep) {
+      return `${formatAccelerator(firstStep)} …`;
+    }
+    return formatAccelerator($settings.hotkey);
+  });
+
+  const hotkeyHint = $derived.by(() => {
+    if (capturing === "first") {
+      return "Press the combination you want, or Esc to cancel.";
+    }
+    if (capturing === "second") {
+      return "Press a second key now for a two-step chord, or pause to keep just this one.";
+    }
+    return "Works in any app. Needs at least one modifier, or a function key.";
+  });
 
   const MODES: { value: RecordingMode; label: string; hint: string }[] = [
     {
@@ -69,21 +197,27 @@
   );
 </script>
 
+<!--
+  While capturing, every key in the window belongs to the recorder; leaving the
+  window ends it rather than leaving that trap armed out of sight.
+-->
+<svelte:window
+  onkeydown={capturing === "off" ? undefined : onCaptureKey}
+  onblur={capturing === "off" ? undefined : onWindowBlur}
+/>
+
 <section>
   <h2>General</h2>
 
-  <Row
-    label="Hotkey"
-    hint="Works in any app. Needs at least one modifier, or a function key."
-  >
+  <Row label="Hotkey" hint={hotkeyHint}>
     <button
       type="button"
       class="capture"
-      class:capturing
+      class:capturing={capturing !== "off"}
+      bind:this={captureButton}
       onclick={startCapture}
-      onkeydown={capturing ? onCaptureKey : undefined}
     >
-      {capturing ? "Press a shortcut…" : formatAccelerator($settings.hotkey)}
+      {captureLabel}
     </button>
     {#if captureError}
       <p class="error">{captureError}</p>
@@ -102,7 +236,10 @@
     </Row>
   {/if}
 
-  <Row label="Startup" hint="Launches LocalDictation into the menu bar when you log in.">
+  <Row
+    label="Startup"
+    hint="Launches LocalDictation into the {trayName()} when you log in."
+  >
     <label class="checkbox">
       <input
         type="checkbox"

@@ -5,13 +5,15 @@
 //! the tricky part — key repeat, out-of-order events, mode switches — testable
 //! without a window server.
 
+pub mod chord;
 pub mod platform;
 
 use serde::{Deserialize, Serialize};
 
 use crate::settings::RecordingMode;
 
-pub use platform::{GlobalHotkeys, TauriGlobalHotkeys};
+pub use chord::{Arming, Chord, ChordStep, CHORD_TIMEOUT};
+pub use platform::{GlobalHotkeys, Shortcut, TauriGlobalHotkeys};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HotkeyError {
@@ -21,6 +23,10 @@ pub enum HotkeyError {
     AlreadyTaken(String),
     #[error("could not register the shortcut: {0}")]
     Registration(String),
+    #[error("\"{0}\" has more than two steps")]
+    TooManySteps(String),
+    #[error("\"{0}\" uses the same combination for both steps")]
+    RepeatedStep(String),
 }
 
 impl HotkeyError {
@@ -36,6 +42,14 @@ impl HotkeyError {
             }
             Self::Registration(_) => {
                 "That shortcut could not be registered. Pick a different one in Settings › General."
+                    .into()
+            }
+            Self::TooManySteps(_) => {
+                "A shortcut can be one combination, or two pressed in sequence — not more."
+                    .into()
+            }
+            Self::RepeatedStep(_) => {
+                "Both steps of that shortcut are the same combination. Make the second one different, like Cmd+K then C."
                     .into()
             }
         }
@@ -84,11 +98,15 @@ pub const fn decide(mode: RecordingMode, event: HotkeyEvent, recording: bool) ->
 /// Check that a shortcut string is one the OS layer will accept, before we try
 /// to store it.
 ///
+/// Accepts one combination or a two-step chord, so this is where a malformed
+/// chord is caught rather than at registration time, when only the prefix would
+/// be looked at.
+///
 /// # Errors
 ///
-/// [`HotkeyError::Invalid`] when the accelerator is empty or does not parse.
+/// Whatever [`Chord::parse`] rejects it for.
 pub fn validate(accelerator: &str) -> Result<(), HotkeyError> {
-    platform::parse(accelerator).map(|_| ())
+    Chord::parse(accelerator).map(|_| ())
 }
 
 #[cfg(test)]

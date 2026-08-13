@@ -29,9 +29,27 @@ use local_dictation_lib::asr::{AudioBuffer, SpeechRecognizer, TranscriptionOptio
 use local_dictation_lib::dictionary::Dictionary;
 use local_dictation_lib::models::{download, ModelStore};
 
+/// The same directory the app uses, without a Tauri app to ask.
+///
+/// This deliberately duplicates Tauri's resolution rather than starting an app
+/// just to read a path — but it has to stay in step with it, so a model
+/// installed here is the one the app finds.
 fn data_dir() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME is not set");
-    PathBuf::from(home).join("Library/Application Support/com.bartek.localdictation")
+    const BUNDLE_ID: &str = "com.bartek.localdictation";
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").expect("HOME is not set");
+        PathBuf::from(home)
+            .join("Library/Application Support")
+            .join(BUNDLE_ID)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").expect("APPDATA is not set");
+        PathBuf::from(appdata).join(BUNDLE_ID)
+    }
 }
 
 /// Minimal 16-bit mono WAV reader — enough for the sample files.

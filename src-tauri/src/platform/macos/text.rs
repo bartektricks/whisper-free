@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use tauri::AppHandle;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::text_insertion::{ClipboardOutcome, InsertError, InsertOutcome, TextInserter};
 
@@ -21,22 +23,18 @@ extern "C" {
     fn AXIsProcessTrusted() -> bool;
 }
 
-pub struct MacOSTextInserter;
+pub struct Inserter {
+    app: AppHandle,
+}
 
-impl MacOSTextInserter {
+impl Inserter {
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub const fn new(app: AppHandle) -> Self {
+        Self { app }
     }
 }
 
-impl Default for MacOSTextInserter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TextInserter for MacOSTextInserter {
+impl TextInserter for Inserter {
     fn can_insert(&self) -> bool {
         // Safety: a parameterless system query with no arguments to get wrong.
         unsafe { AXIsProcessTrusted() }
@@ -45,9 +43,7 @@ impl TextInserter for MacOSTextInserter {
     fn request_permission(&self) {
         // Opening the pane is more reliable than the system prompt, which only
         // appears once per app and is easy to miss.
-        let _ = std::process::Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-            .spawn();
+        crate::platform::open_input_permission_settings();
     }
 
     fn insert(&self, text: &str) -> Result<InsertOutcome, InsertError> {
@@ -55,16 +51,15 @@ impl TextInserter for MacOSTextInserter {
             return Err(InsertError::PermissionDenied);
         }
 
-        let mut clipboard =
-            arboard::Clipboard::new().map_err(|e| InsertError::Clipboard(e.to_string()))?;
+        let clipboard = self.app.clipboard();
 
         // Remember what was there. A read failure is not necessarily an empty
         // clipboard — it may hold an image or files, which we cannot preserve.
-        let previous = clipboard.get_text().ok();
-        let had_non_text = previous.is_none() && clipboard.get_image().is_ok();
+        let previous = clipboard.read_text().ok();
+        let had_non_text = previous.is_none() && clipboard.read_image().is_ok();
 
         clipboard
-            .set_text(text.to_string())
+            .write_text(text)
             .map_err(|e| InsertError::Clipboard(e.to_string()))?;
 
         // On failure the text stays on the clipboard: the user can still paste
@@ -74,7 +69,7 @@ impl TextInserter for MacOSTextInserter {
         std::thread::sleep(PASTE_SETTLE);
 
         let outcome = match previous {
-            Some(previous) => match clipboard.set_text(previous) {
+            Some(previous) => match clipboard.write_text(previous) {
                 Ok(()) => ClipboardOutcome::Restored,
                 Err(e) => {
                     tracing::warn!(error = %e, "could not restore the clipboard");
@@ -90,6 +85,10 @@ impl TextInserter for MacOSTextInserter {
 }
 
 /// Synthesise Cmd+V at the HID level, so the frontmost app sees a real paste.
+///
+/// The flags are set on the event rather than by pressing Command, so a
+/// modifier the user happens to be holding cannot leak into the shortcut. The
+/// Windows backend has no equivalent and has to clear them by hand.
 fn send_paste() -> Result<(), InsertError> {
     let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
         .map_err(|()| InsertError::Keystroke("could not create an event source".into()))?;

@@ -51,13 +51,24 @@ pub fn update_settings(
     // otherwise a taken shortcut would be saved and silently do nothing.
     let previous_hotkey = ctx.settings.lock().map_err(lock_err)?.hotkey.clone();
     if settings.hotkey != previous_hotkey {
-        crate::hotkey::validate(&settings.hotkey).map_err(|e| e.user_message())?;
-        if let Err(e) = ctx.hotkeys.register(&settings.hotkey) {
+        // Parsing is the validation: it is what rejects a malformed chord,
+        // which registering the first step alone would happily accept.
+        let chord = crate::hotkey::Chord::parse(&settings.hotkey).map_err(|e| e.user_message())?;
+
+        // Only the first step is claimed here. A chord's second step is
+        // registered for the moment the window is open — see `dictation`.
+        if let Err(e) = ctx.hotkeys.register(&chord.prefix.accelerator) {
             tracing::warn!(event = "hotkey_registration_failed", error = %e);
             // Put the working shortcut back so the user is not left with none.
-            let _ = ctx.hotkeys.register(&previous_hotkey);
+            if let Ok(previous) = crate::hotkey::Chord::parse(&previous_hotkey) {
+                let _ = ctx.hotkeys.register(&previous.prefix.accelerator);
+            }
             return Err(e.user_message());
         }
+
+        // Only now that the OS has accepted it: an earlier swap would leave the
+        // chord machinery describing a shortcut that is not registered.
+        ctx.chord.lock().map_err(lock_err)?.set(chord);
         tracing::info!(event = "hotkey_registered", accelerator = %settings.hotkey);
     }
 
@@ -81,6 +92,55 @@ pub fn update_settings(
     tracing::info!(event = "settings_updated");
     let _ = app.emit_to_all("settings_changed", &settings);
     Ok(settings)
+}
+
+/// Release the hotkey while the user records a new one.
+///
+/// A registered shortcut is claimed system-wide, including from our own
+/// windows, so the recorder in Settings would never see the very combination
+/// the user is trying to replace — pressing it would start a dictation instead.
+/// That was already true of a plain hotkey and is unavoidable for a chord,
+/// whose prefix is the thing being re-recorded.
+///
+/// # Errors
+///
+/// When the OS refuses to release the shortcut.
+#[tauri::command]
+pub fn suspend_hotkey(ctx: State<'_, AppContext>) -> CommandResult<()> {
+    ctx.hotkeys.unregister_all().map_err(|e| e.user_message())?;
+    // Any chord window open against the registration just dropped is now
+    // describing shortcuts nobody holds.
+    ctx.chord.lock().map_err(lock_err)?.close();
+    tracing::debug!(event = "hotkey_suspended");
+    Ok(())
+}
+
+/// Claim the hotkey again once recording finishes.
+///
+/// Registers whatever the live hotkey is now — the newly chosen one if it was
+/// accepted, the previous one if it was not — so the user is never left with
+/// no shortcut at all.
+///
+/// # Errors
+///
+/// When the shortcut cannot be registered again.
+#[tauri::command]
+pub fn resume_hotkey(ctx: State<'_, AppContext>) -> CommandResult<()> {
+    let accelerator = ctx
+        .chord
+        .lock()
+        .map_err(lock_err)?
+        .chord()
+        .prefix
+        .accelerator
+        .clone();
+
+    ctx.hotkeys.register(&accelerator).map_err(|e| {
+        tracing::warn!(event = "hotkey_resume_failed", error = %e);
+        e.user_message()
+    })?;
+    tracing::debug!(event = "hotkey_resumed", accelerator = %accelerator);
+    Ok(())
 }
 
 /// # Errors
@@ -415,8 +475,10 @@ fn apply_start_at_login(app: &AppHandle, enabled: bool) -> CommandResult<()> {
 
     result.map_err(|e| {
         tracing::warn!(error = %e, enabled, "could not change the login item");
-        "Starting at login could not be changed. You can add LocalDictation manually in System Settings › General › Login Items."
-            .to_string()
+        format!(
+            "Starting at login could not be changed. You can add LocalDictation manually in {}.",
+            crate::platform::strings::LOGIN_ITEMS_SETTINGS
+        )
     })?;
 
     tracing::info!(event = "start_at_login_changed", enabled);

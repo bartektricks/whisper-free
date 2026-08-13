@@ -33,17 +33,25 @@ function createSettingsStore() {
    * The backend is the source of truth: we write what it returns, so a
    * rejected or normalised value shows up in the UI rather than being
    * silently assumed.
+   *
+   * Returns the backend's refusal message, or `null` when the change stuck, so
+   * a caller can also show it beside the control that caused it — the backend
+   * distinguishes an unparseable shortcut from one another app already owns,
+   * and that distinction is worth keeping.
    */
-  async function update(patch: Partial<Settings>) {
+  async function update(patch: Partial<Settings>): Promise<string | null> {
     const previous = get({ subscribe });
     const next = { ...previous, ...patch };
     set(next); // optimistic, so controls feel immediate
     try {
       set(await invoke<Settings>("update_settings", { settings: next }));
       error.set(null);
+      return null;
     } catch (e) {
       set(previous); // roll back to what is actually persisted
-      error.set(String(e));
+      const message = String(e);
+      error.set(message);
+      return message;
     }
   }
 

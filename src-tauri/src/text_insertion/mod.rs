@@ -20,16 +20,18 @@ impl InsertError {
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            Self::PermissionDenied => {
-                "LocalDictation needs Accessibility permission to paste text. Grant it in System Settings › Privacy & Security › Accessibility, then try again."
-                    .into()
-            }
+            // Whole sentences per platform: macOS withholds a permission
+            // before anything happens, while Windows refuses input to a more
+            // privileged window once the text is already on the clipboard.
+            Self::PermissionDenied => crate::platform::strings::INSERT_PERMISSION_DENIED.into(),
             Self::Clipboard(_) => {
                 "The text could not be placed on the clipboard. Try again.".into()
             }
             Self::Keystroke(_) => {
-                "The text was copied to the clipboard, but pasting failed. Press Cmd+V to paste it."
-                    .into()
+                format!(
+                    "The text was copied to the clipboard, but pasting failed. Press {} to paste it.",
+                    crate::platform::strings::PASTE_SHORTCUT
+                )
             }
         }
     }
@@ -84,10 +86,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn permission_message_names_the_setting_to_change() {
+    fn permission_message_says_what_the_user_can_do_about_it() {
         let msg = InsertError::PermissionDenied.user_message();
-        assert!(msg.contains("Accessibility"));
-        assert!(msg.contains("System Settings"));
+        // The wording differs per platform, but it must always name a concrete
+        // next step rather than just reporting the refusal.
+        assert!(msg.contains("LocalDictation"));
+        assert!(
+            msg.contains("System Settings") || msg.contains(crate::platform::strings::PASTE_SHORTCUT),
+            "no actionable next step: {msg}"
+        );
     }
 
     #[test]
@@ -95,7 +102,7 @@ mod tests {
         // The transcription is on the clipboard at that point, so losing the
         // keystroke should not mean losing the words.
         let msg = InsertError::Keystroke("CGEvent creation failed".into()).user_message();
-        assert!(msg.contains("Cmd+V"));
+        assert!(msg.contains(crate::platform::strings::PASTE_SHORTCUT));
         assert!(!msg.contains("CGEvent"), "leaked internals: {msg}");
     }
 
@@ -103,5 +110,20 @@ mod tests {
     fn clipboard_errors_stay_readable() {
         let msg = InsertError::Clipboard("NSPasteboard error -25300".into()).user_message();
         assert!(!msg.contains("NSPasteboard"), "leaked internals: {msg}");
+    }
+
+    #[test]
+    fn user_messages_never_leak_platform_internals() {
+        let errors = [
+            InsertError::PermissionDenied,
+            InsertError::Clipboard("NSPasteboard error -25300".into()),
+            InsertError::Keystroke("SendInput accepted 0 of 4 events: HRESULT 0x5".into()),
+        ];
+        for e in errors {
+            let msg = e.user_message();
+            for internal in ["CGEvent", "NSPasteboard", "SendInput", "HRESULT", "clipboard-win"] {
+                assert!(!msg.contains(internal), "leaked internals: {msg}");
+            }
+        }
     }
 }

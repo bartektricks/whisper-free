@@ -6,11 +6,16 @@
 use std::str::FromStr;
 
 use tauri::AppHandle;
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+pub use tauri_plugin_global_shortcut::Shortcut;
 
 use super::HotkeyError;
 
-/// Registering and releasing the system-wide shortcut.
+/// Registering and releasing system-wide shortcuts.
+///
+/// More than one can be live at a time, because the second step of a chord is
+/// registered alongside the prefix for as long as the chord window is open.
 pub trait GlobalHotkeys: Send + Sync {
     /// Make `accelerator` the only registered shortcut.
     ///
@@ -19,6 +24,21 @@ pub trait GlobalHotkeys: Send + Sync {
     /// [`HotkeyError::Invalid`] when the accelerator does not parse, or
     /// [`HotkeyError::AlreadyTaken`] when another application owns it.
     fn register(&self, accelerator: &str) -> Result<(), HotkeyError>;
+
+    /// Register `accelerator` as well as whatever is already registered.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register`].
+    fn add(&self, accelerator: &str) -> Result<(), HotkeyError>;
+
+    /// Release one accelerator, leaving the rest registered.
+    ///
+    /// # Errors
+    ///
+    /// [`HotkeyError::Invalid`] when the accelerator does not parse, or
+    /// [`HotkeyError::Registration`] when the OS refuses to release it.
+    fn remove(&self, accelerator: &str) -> Result<(), HotkeyError>;
 
     /// Release every shortcut we hold.
     ///
@@ -53,14 +73,17 @@ impl TauriGlobalHotkeys {
 
 impl GlobalHotkeys for TauriGlobalHotkeys {
     fn register(&self, accelerator: &str) -> Result<(), HotkeyError> {
+        // Whatever was live belongs to the previous hotkey, including a chord
+        // second step left registered by a window that is now irrelevant.
+        // Ignore failures: there may be nothing registered yet.
+        let _ = self.app.global_shortcut().unregister_all();
+        self.add(accelerator)
+    }
+
+    fn add(&self, accelerator: &str) -> Result<(), HotkeyError> {
         let shortcut = parse(accelerator)?;
-        let manager = self.app.global_shortcut();
 
-        // Exactly one dictation shortcut is live at a time, so clear first.
-        // Ignore failures here: there may be nothing registered yet.
-        let _ = manager.unregister_all();
-
-        manager.register(shortcut).map_err(|e| {
+        self.app.global_shortcut().register(shortcut).map_err(|e| {
             let text = e.to_string();
             // Another app already owns it — worth telling the user plainly
             // rather than leaving them with a shortcut that does nothing.
@@ -70,6 +93,14 @@ impl GlobalHotkeys for TauriGlobalHotkeys {
                 HotkeyError::Registration(text)
             }
         })
+    }
+
+    fn remove(&self, accelerator: &str) -> Result<(), HotkeyError> {
+        let shortcut = parse(accelerator)?;
+        self.app
+            .global_shortcut()
+            .unregister(shortcut)
+            .map_err(|e| HotkeyError::Registration(e.to_string()))
     }
 
     fn unregister_all(&self) -> Result<(), HotkeyError> {
