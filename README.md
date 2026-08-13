@@ -1,9 +1,9 @@
 # LocalDictation
 
-Fully local dictation for macOS. Press a hotkey, speak, and the text appears
-where your cursor is. Polish and English, detected automatically.
+Fully local dictation for macOS and Windows. Press a hotkey, speak, and the text
+appears where your cursor is. Polish and English, detected automatically.
 
-Nothing you say leaves your Mac.
+Nothing you say leaves your machine.
 
 ## Privacy guarantees
 
@@ -12,7 +12,7 @@ These are architectural commitments, not settings you have to find and switch on
 - Microphone audio is held in memory and **never written to disk**.
 - Transcription runs **on your machine**, through a local ONNX model. There is no
   cloud API, no server, and no account.
-- Your dictionary and settings stay in your user Library folder.
+- Your dictionary and settings stay in your own user profile.
 - **No telemetry, no analytics, no crash reporting.**
 - Logs record durations, sample counts and event names — never audio,
   transcription text, or clipboard contents.
@@ -22,8 +22,9 @@ These are architectural commitments, not settings you have to find and switch on
 
 ## Requirements
 
-- Apple Silicon Mac, macOS 13 or later
-- [Rust](https://rustup.rs), [Bun](https://bun.sh), and Xcode command line tools
+- Apple Silicon Mac on macOS 13 or later, or 64-bit Windows 10/11
+- [Rust](https://rustup.rs) and [Bun](https://bun.sh); Xcode command line tools on
+  macOS, the MSVC build tools on Windows
 - ~700 MB of disk for the speech model
 
 ## Running it
@@ -33,8 +34,17 @@ bun install
 bun run tauri dev
 ```
 
-The app has no Dock icon by design — it lives in the menu bar. On first launch
-it opens its settings window to introduce itself.
+The app has no Dock icon by design — it lives in the macOS menu bar, or the
+Windows notification area. On first launch it opens its settings window to
+introduce itself.
+
+The default hotkey is ⌥Space on macOS and Ctrl+Alt+Space on Windows, where
+Alt+Space belongs to the system window menu.
+
+The hotkey can also be a two-step chord — press ⌘K, then K — written the way
+VS Code writes them. The first combination is held system-wide, as any global
+shortcut is; if you do not follow it with the second key within 800 ms it is
+passed on to whichever app you were using, so ⌘K keeps working everywhere else.
 
 ### Useful commands
 
@@ -62,7 +72,8 @@ is used.
 Models are installed to:
 
 ```
-~/Library/Application Support/com.bartek.localdictation/models/
+macOS    ~/Library/Application Support/com.bartek.localdictation/models/
+Windows  %APPDATA%\com.bartek.localdictation\models\
 ```
 
 Why this model and this runtime — including the measurements behind the choice,
@@ -76,13 +87,21 @@ The short version, measured on an M1 Pro:
 | Memory | ~1.4 GB while loaded |
 | Execution provider | **CPU** — CoreML measured 2.9× *slower* and used 4.5× the memory |
 
-## Permissions macOS will ask for
+## Permissions
+
+**macOS** asks for two:
 
 - **Microphone** — to record what you say. Requested the first time you record.
 - **Accessibility** — to paste into the app you are typing in. Requested when
   text insertion is first used.
 
 Both are grantable in System Settings › Privacy & Security.
+
+**Windows** asks for neither. Microphone access is governed by the toggle in
+Settings › Privacy & security › Microphone, and pasting needs no permission at
+all — with one exception: Windows will not let LocalDictation paste into a window
+belonging to a program running as administrator. When that happens the
+transcription is left on the clipboard and the app says so, so nothing is lost.
 
 ## Layout
 
@@ -95,7 +114,9 @@ src-tauri/src/
   audio/                 microphone capture, downmix, resampling
   state/                 the authoritative application state machine
   settings/              persisted user settings
-  platform/macos/        everything macOS-specific lives here
+  platform/              the OS seam: mod.rs is the whole API
+  platform/macos/        \_ one directory per platform, selected at compile time
+  platform/windows/      /
 docs/decisions/          architecture decision records
 ```
 
@@ -103,8 +124,10 @@ Two boundaries are load-bearing and worth preserving:
 
 - **`asr/`** — the rest of the app only knows `audio -> transcription`. Swapping
   in Whisper or another model should touch one file.
-- **`platform/`** — no macOS API is called from application logic, so Windows and
-  Linux remain reachable later.
+- **`platform/`** — no OS API is called from application logic. The backend
+  module is private, so a platform directory cannot be reached around; adding
+  Linux means adding one directory and one `cfg_attr` line.
+  See [`docs/decisions/0002-cross-platform-platform-layer.md`](docs/decisions/0002-cross-platform-platform-layer.md).
 
 ## Status
 
@@ -113,8 +136,9 @@ dictionary → paste.
 
 Working today:
 
-- Menu-bar app with a settings window, and an authoritative state machine
-- Configurable global hotkey, hold-to-talk or toggle
+- Menu-bar / notification-area app with a settings window, and an authoritative
+  state machine
+- Configurable global hotkey, including two-step chords, hold-to-talk or toggle
 - Microphone capture with device selection and a level test
 - Model download with progress, SHA-256 verification, and removal
 - Local transcription with automatic language detection and punctuation
@@ -129,6 +153,13 @@ mid-recording, and very long recordings** still need a pass. Dictation into
 real apps (VS Code, Terminal, browsers) needs a human at the keyboard — the
 insertion code path is exercised, but only you can confirm the text lands
 where you expect.
+
+**The Windows backend has not yet been run on Windows.** It compiles and its
+decision logic is unit-tested, but it cannot be cross-compiled from macOS (the
+`ring` C build needs the MSVC headers), so CI and a real machine are the first
+places it is exercised. The parts most worth watching are the synthetic paste
+with modifiers still held, and the tray icon, which is currently a macOS
+monochrome template image.
 
 ### Checking it yourself
 

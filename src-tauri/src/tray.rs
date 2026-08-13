@@ -4,9 +4,10 @@
 //! settings, and a way out.
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager, Wry};
 
+use crate::platform;
 use crate::state::{AppState, StateSnapshot};
 
 pub const TRAY_ID: &str = "main";
@@ -41,8 +42,17 @@ pub fn status_text(snapshot: &StateSnapshot) -> String {
 pub fn build(app: &App) -> tauri::Result<TrayHandles> {
     // Disabled: a label, not an action.
     let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("Cmd+,"))?;
-    let quit = MenuItem::with_id(app, "quit", "Quit LocalDictation", true, Some("Cmd+Q"))?;
+
+    // Only platforms whose menus carry working shortcuts advertise them.
+    let accelerators = platform::tray_accelerators();
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, accelerators.settings)?;
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        "Quit LocalDictation",
+        true,
+        accelerators.quit,
+    )?;
 
     let menu = Menu::with_items(
         app,
@@ -57,7 +67,7 @@ pub fn build(app: &App) -> tauri::Result<TrayHandles> {
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        .show_menu_on_left_click(platform::tray_menu_on_left_click())
         .on_menu_event(|app, event| match event.id.as_ref() {
             "settings" => {
                 if let Err(e) = show_settings_window(app) {
@@ -71,10 +81,30 @@ pub fn build(app: &App) -> tauri::Result<TrayHandles> {
             other => tracing::debug!(id = other, "unhandled tray menu event"),
         });
 
+    // Where the menu is not on the left button, that button has to do something
+    // useful instead, or the icon looks dead to a click.
+    if !platform::tray_menu_on_left_click() {
+        builder = builder.on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                if let Err(e) = show_settings_window(tray.app_handle()) {
+                    tracing::error!(error = %e, "could not open settings window");
+                }
+            }
+        });
+    }
+
     match app.default_window_icon().cloned() {
         Some(icon) => {
-            // Template rendering lets macOS tint the icon for light/dark menu bars.
-            builder = builder.icon(icon).icon_as_template(true);
+            builder = builder
+                .icon(icon)
+                // Template rendering lets macOS tint the icon for light and
+                // dark menu bars. Elsewhere the icon is drawn as supplied.
+                .icon_as_template(platform::tray_icon_is_template());
             tracing::info!(event = "tray_icon_attached");
         }
         None => {

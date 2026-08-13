@@ -1,4 +1,4 @@
-//! LocalDictation — fully local macOS dictation.
+//! LocalDictation — fully local dictation.
 //!
 //! Architecture (plan §4): the UI is a thin Svelte layer that renders state and
 //! sends commands. Rust owns the state machine, audio, the ASR engine, and text
@@ -41,6 +41,7 @@ pub mod tray;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
@@ -54,7 +55,9 @@ use tray::TrayHandles;
 pub struct AppContext {
     pub state: Mutex<StateMachine>,
     pub settings: Mutex<Settings>,
-    /// `~/Library/Application Support/LocalDictation`
+    /// The app data directory Tauri resolves for this platform, e.g.
+    /// `~/Library/Application Support/com.bartek.localdictation` on macOS and
+    /// `%APPDATA%\com.bartek.localdictation` on Windows.
     pub data_dir: PathBuf,
     pub tray: Mutex<Option<TrayHandles>>,
     /// Owns the microphone on its own thread.
@@ -63,6 +66,10 @@ pub struct AppContext {
     pub recognizer: Mutex<Option<Box<dyn asr::SpeechRecognizer>>>,
     /// System-wide shortcut registration.
     pub hotkeys: Box<dyn hotkey::GlobalHotkeys>,
+    /// The hotkey as parsed, plus the state of a chord waiting for its second
+    /// step. The string in `settings` stays the source of truth; this is that
+    /// string parsed once, so the hot path compares keys rather than text.
+    pub chord: Mutex<hotkey::Arming>,
     /// Installed models on disk.
     pub models: models::ModelStore,
     /// Cancel handles for downloads currently in flight, keyed by model id.
@@ -71,6 +78,13 @@ pub struct AppContext {
     pub dictionary: Mutex<dictionary::Dictionary>,
     /// Places the final text into the focused application.
     pub inserter: Box<dyn text_insertion::TextInserter>,
+    /// Claimed by whichever hotkey event gets to end a recording first.
+    ///
+    /// Windows repeats `WM_HOTKEY` while a key is held and `global-hotkey`
+    /// watches for the release on a thread per repeat, so several `Released`
+    /// events can arrive at once from different threads. Without this, two of
+    /// them would both see `is_recording()` and both start a pipeline.
+    pub finishing: AtomicBool,
     /// Kept alive for the process lifetime so buffered log lines are flushed.
     _log_guard: Option<WorkerGuard>,
 }
@@ -234,6 +248,19 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let initial = state.snapshot();
     let _ = handles.status.set_text(tray::status_text(&initial));
 
+    // Parsed before the context is built, because the chord machinery needs it
+    // on every hotkey event and re-parsing a string there would be wasteful.
+    // A settings file edited by hand can hold anything, and a hotkey that does
+    // not parse must not stop the app from starting. The default is covered by
+    // a test, so failing there really is a broken build rather than bad input.
+    let startup_chord = match hotkey::Chord::parse(&settings.hotkey) {
+        Ok(chord) => chord,
+        Err(e) => {
+            tracing::warn!(error = %e, "stored hotkey does not parse; falling back to the default");
+            hotkey::Chord::parse(settings::DEFAULT_HOTKEY)?
+        }
+    };
+
     app.manage(AppContext {
         state: Mutex::new(state),
         settings: Mutex::new(settings),
@@ -242,23 +269,34 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         audio: audio::AudioEngine::spawn(),
         recognizer: Mutex::new(None),
         hotkeys: Box::new(hotkey::TauriGlobalHotkeys::new(app.handle().clone())),
+        // A settings file edited by hand can hold anything, and a hotkey that
+        // does not parse must not stop the app from starting.
+        chord: Mutex::new(hotkey::Arming::new(startup_chord)),
         models: models::ModelStore::new(&data_dir_for_store),
         downloads: Mutex::new(HashMap::new()),
         dictionary: Mutex::new(dictionary),
-        inserter: platform::text_inserter(),
+        inserter: platform::text_inserter(app.handle().clone()),
+        finishing: AtomicBool::new(false),
         _log_guard: log_guard,
     });
 
     // A shortcut another app already owns must not stop startup — the app still
     // runs, and Settings is where the user fixes it.
     let ctx = app.state::<AppContext>();
-    let accelerator = ctx
-        .settings
-        .lock()
-        .map_or_else(|_| settings::DEFAULT_HOTKEY.to_string(), |s| s.hotkey.clone());
+    let (accelerator, is_chord) = ctx.chord.lock().map_or_else(
+        |_| (settings::DEFAULT_HOTKEY.to_string(), false),
+        |g| (g.chord().prefix.accelerator.clone(), g.chord().is_chord()),
+    );
 
+    // Only the first step is registered. A chord's second step is claimed from
+    // the OS for the moment between the prefix firing and the window closing —
+    // see `dictation::arm_chord`.
     match ctx.hotkeys.register(&accelerator) {
-        Ok(()) => tracing::info!(event = "hotkey_registered", accelerator = %accelerator),
+        Ok(()) => tracing::info!(
+            event = "hotkey_registered",
+            accelerator = %accelerator,
+            chord = is_chord
+        ),
         Err(e) => {
             tracing::warn!(event = "hotkey_registration_failed", error = %e);
             let message = e.user_message();
@@ -286,15 +324,28 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        // First, and deliberately so: the plugin has to run before anything
+        // else can claim a resource. A second instance would otherwise fight
+        // over the global shortcut, load its own ~1.4 GB copy of the model, and
+        // race the first one for the clipboard.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tracing::info!(event = "second_instance_blocked");
+            if let Err(e) = tray::show_settings_window(app) {
+                tracing::error!(error = %e, "could not surface the running instance");
+            }
+        }))
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    // Only one shortcut is ever registered, so the identity of
-                    // the shortcut does not matter — only the edge.
+                .with_handler(|app, shortcut, event| {
+                    // Which shortcut fired matters now: a chord registers its
+                    // second step alongside the prefix, so two can be live.
                     let edge = match event.state {
                         tauri_plugin_global_shortcut::ShortcutState::Pressed => {
                             hotkey::HotkeyEvent::Pressed
@@ -303,7 +354,7 @@ pub fn run() {
                             hotkey::HotkeyEvent::Released
                         }
                     };
-                    dictation::on_hotkey(app, edge);
+                    dictation::on_hotkey(app, shortcut, edge);
                 })
                 .build(),
         )
@@ -311,6 +362,8 @@ pub fn run() {
             commands::get_recording_state,
             commands::get_settings,
             commands::update_settings,
+            commands::suspend_hotkey,
+            commands::resume_hotkey,
             commands::open_settings_window,
             commands::list_audio_devices,
             commands::start_microphone_test,

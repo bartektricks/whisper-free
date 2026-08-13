@@ -219,8 +219,13 @@ fn host_devices() -> Result<Vec<Device>, AudioError> {
         .map_err(|e| AudioError::DeviceQuery(e.to_string()))
 }
 
-/// cpal identifies devices by a `DeviceId` that is stable across reboots; the
-/// `Display` name is for humans only.
+/// cpal identifies devices by a `DeviceId`; the `Display` name is for humans
+/// only.
+///
+/// CoreAudio and WASAPI ids survive reboots and reconnection, which is what
+/// makes them safe to persist in settings. ALSA ids are positional, so a Linux
+/// backend would need to re-check this assumption — a device that moves is
+/// reported as unavailable rather than silently swapped, so it fails loudly.
 fn device_id(device: &Device) -> Option<String> {
     device.id().ok().map(|id| id.to_string())
 }
@@ -263,7 +268,9 @@ fn find_device(requested: Option<&str>) -> Result<Device, AudioError> {
 /// Choose a capture format, preferring one that needs no resampling.
 ///
 /// CoreAudio will hand us 16 kHz directly on most built-in microphones, which
-/// skips a conversion step and the quality loss that comes with it.
+/// skips a conversion step and the quality loss that comes with it. WASAPI in
+/// shared mode will not, so on Windows the resampler is the normal path rather
+/// than the exception; the cost is negligible against inference.
 fn pick_config(device: &Device) -> Result<SupportedStreamConfig, AudioError> {
     if let Ok(ranges) = device.supported_input_configs() {
         let native_16k = ranges
@@ -310,10 +317,18 @@ fn start_stream(requested: Option<&str>) -> Result<Active, AudioError> {
         tracing::error!(event = "audio_stream_error", device = %error_name, error = %e);
     };
 
+    // CoreAudio hands back f32 or i16, but WASAPI and ALSA routinely offer the
+    // wider integer formats too. Each arm converts straight to f32 — decision
+    // 0001 found that a detour through 16-bit changes what the model hears.
     let stream = match sample_format {
         SampleFormat::F32 => build_stream::<f32>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::F64 => build_stream::<f64>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::I8 => build_stream::<i8>(&device, config, samples.clone(), cap, on_error),
         SampleFormat::I16 => build_stream::<i16>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::I32 => build_stream::<i32>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::U8 => build_stream::<u8>(&device, config, samples.clone(), cap, on_error),
         SampleFormat::U16 => build_stream::<u16>(&device, config, samples.clone(), cap, on_error),
+        SampleFormat::U32 => build_stream::<u32>(&device, config, samples.clone(), cap, on_error),
         other => {
             return Err(AudioError::StreamStart(format!(
                 "unsupported sample format {other:?}"
@@ -369,10 +384,16 @@ where
 /// Turn a cpal build failure into something the app can act on.
 fn map_build_error(e: &cpal::Error, device: &Device) -> AudioError {
     let text = e.to_string();
-    // cpal surfaces a TCC refusal as a generic backend error, so match on the
-    // message. When in doubt this stays a generic start failure.
+    // Neither backend has a "permission refused" error kind: macOS surfaces a
+    // TCC refusal and Windows a microphone-privacy refusal as generic backend
+    // errors, so match on the message. When in doubt this stays a generic start
+    // failure.
     let lowered = text.to_lowercase();
-    if lowered.contains("permission") || lowered.contains("not authorized") {
+    if lowered.contains("permission")
+        || lowered.contains("not authorized")
+        || lowered.contains("access is denied")
+        || lowered.contains("access denied")
+    {
         return AudioError::PermissionDenied;
     }
     if lowered.contains("device not available") || lowered.contains("devicenotavailable") {

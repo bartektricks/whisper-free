@@ -61,8 +61,10 @@ impl AudioError {
     pub fn user_message(&self) -> String {
         match self {
             Self::PermissionDenied => {
-                "LocalDictation needs microphone access. Grant it in System Settings › Privacy & Security › Microphone, then try again."
-                    .into()
+                format!(
+                    "LocalDictation needs microphone access. Grant it in {}, then try again.",
+                    crate::platform::strings::MICROPHONE_SETTINGS
+                )
             }
             Self::NoDevice => {
                 "No microphone was found. Connect one and try again.".into()

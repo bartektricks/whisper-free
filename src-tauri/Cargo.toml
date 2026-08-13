@@ -1,7 +1,7 @@
 [package]
 name = "local-dictation"
 version = "0.1.0"
-description = "Fully local macOS dictation"
+description = "Fully local dictation"
 authors = ["Bartlomiej Ciszewski"]
 edition = "2021"
 license = "MIT"
@@ -25,13 +25,33 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 cpal = "0.18.1"
 rubato = "5.0.0"
-tauri-plugin-global-shortcut = "2.3.2"
 ureq = "3.4.0"
 sha2 = "0.11.0"
-transcribe-rs = { version = "0.3.11", features = ["onnx", "ort-coreml"] }
-arboard = "3.6.1"
-core-graphics = "0.25.0"
+
+# Official plugins. Everything here is driven from Rust, so only the `os`
+# plugin — whose `platform()` is called from Svelte — needs a capability entry.
+tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-autostart = "2.5.1"
+tauri-plugin-clipboard-manager = "2.3.2"
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-os = "2.3.2"
+tauri-plugin-single-instance = "2.4.3"
+
+# The execution provider is a runtime setting (decision 0001), so CoreML stays
+# available on macOS even though the app asks for CPU. Elsewhere there is no
+# CoreML to enable.
+[target.'cfg(target_os = "macos")'.dependencies]
+transcribe-rs = { version = "0.3.11", features = ["onnx", "ort-coreml"] }
+core-graphics = "0.25.0"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+transcribe-rs = { version = "0.3.11", features = ["onnx"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
 
 [profile.release]
 codegen-units = 1
