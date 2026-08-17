@@ -16,7 +16,16 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# `macos-private-api` is what makes a transparent window legal on macOS, and a
+# transparent window is what gives the dictation overlay rounded corners. The
+# Tauri CLI would infer the feature from `macOSPrivateApi` in tauri.conf.json,
+# but CI runs `cargo clippy` directly, so it is spelled out here to keep the two
+# builds identical. See docs/decisions/0004-dictation-overlay.md.
+tauri = { version = "2", features = [
+    "tray-icon",
+    "image-png",
+    "macos-private-api",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -43,6 +52,15 @@ tauri-plugin-single-instance = "2.4.3"
 [target.'cfg(target_os = "macos")'.dependencies]
 transcribe-rs = { version = "0.3.11", features = ["onnx", "ort-coreml"] }
 core-graphics = "0.25.0"
+
+# Only for the overlay's window level and Spaces behaviour, which Tauri does not
+# expose (`platform/macos/window.rs`). Already in the tree via tao, so the
+# versions are pinned to match rather than to pull in a second copy.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSResponder",
+    "NSWindow",
+] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 transcribe-rs = { version = "0.3.11", features = ["onnx"] }

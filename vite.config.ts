@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
@@ -6,6 +7,18 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [svelte()],
+
+  // Two windows, two entry points. The overlay deliberately does not route off
+  // `index.html`: that would pull the whole settings bundle into a webview that
+  // renders one pill.
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, "index.html"),
+        overlay: resolve(__dirname, "overlay.html"),
+      },
+    },
+  },
 
   // Vite options tailored for Tauri development, applied in `tauri dev` / `tauri build`.
   //

@@ -95,6 +95,21 @@ pub fn become_menu_bar_app(app: &mut tauri::App) {
     backend::become_menu_bar_app(app);
 }
 
+/// Raise an always-on-top window above other floating windows, and let it
+/// follow the user between Spaces.
+///
+/// "Always on top" is not the same claim on both platforms. On Windows it means
+/// what it says. On macOS it means `NSFloatingWindowLevel`, which merely *ties*
+/// with every other floating window — another app's picture-in-picture will
+/// cover it — so the level and the Spaces behaviour have to be set explicitly.
+///
+/// It does **not** get a window into another application's full-screen Space on
+/// macOS; that needs an `NSPanel`, and no window level achieves it. See
+/// `docs/decisions/0004-dictation-overlay.md`.
+pub fn float_above_other_windows(window: &tauri::WebviewWindow) {
+    backend::float_above_other_windows(window);
+}
+
 /// The hotkey a fresh install starts with.
 ///
 /// Platform-specific because a combination that is free on one system is

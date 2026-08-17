@@ -78,6 +78,12 @@ pub fn update_settings(
         apply_start_at_login(&app, settings.start_at_login)?;
     }
 
+    let overlay_changed = {
+        let current = ctx.settings.lock().map_err(lock_err)?;
+        current.show_overlay != settings.show_overlay
+            || current.overlay_anchor != settings.overlay_anchor
+    };
+
     let path = crate::settings::settings_path(&ctx.data_dir);
     settings.save(&path).map_err(|e| {
         tracing::error!(error = %e, "could not save settings");
@@ -87,6 +93,15 @@ pub fn update_settings(
     {
         let mut guard = ctx.settings.lock().map_err(lock_err)?;
         *guard = settings.clone();
+    }
+
+    // Only when it actually changed: re-applying on every save would pop the
+    // overlay back up for an unrelated edit made while the app is in `Error`.
+    // The settings guard above is out of scope by here, which matters because
+    // `overlay::apply` takes that same lock.
+    if overlay_changed {
+        let snapshot = ctx.state.lock().map_err(lock_err)?.snapshot();
+        crate::overlay::apply(&app, ctx.inner(), &snapshot);
     }
 
     tracing::info!(event = "settings_updated");

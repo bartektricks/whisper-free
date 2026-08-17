@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::settings::RecordingMode;
 
 pub use chord::{Arming, Chord, ChordStep, CHORD_TIMEOUT};
-pub use platform::{GlobalHotkeys, Shortcut, TauriGlobalHotkeys};
+pub use platform::{is_cancel, GlobalHotkeys, Shortcut, TauriGlobalHotkeys, CANCEL_ACCELERATOR};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HotkeyError {

@@ -72,6 +72,23 @@ paste-settle sleep would otherwise block the thread delivering hotkey events. Pr
 are checked against the real thing (`recognizer.is_some()`, `ctx.audio.is_recording()`)
 rather than against `AppState`, since state can be stale or `Error` after a failure.
 
+**Overlay (`overlay.rs`)** is the floating indicator, a second window labelled
+`overlay` declared in `tauri.conf.json`. Rust decides *whether* it is on screen and
+*where*; the webview (`src/overlay/`, its own Vite entry) decides what it looks like,
+from the same `state_changed` broadcast. `publish_state` emits before it calls
+`overlay::apply`, so the webview has the snapshot before the window appears, and
+`apply` posts its window work with `run_on_main_thread` rather than blocking the
+caller — which may be the hotkey handler. `place` is pure and tested per anchor.
+`platform::float_above_full_screen_apps` raises the window level; note that the
+overlay still cannot enter another app's full-screen Space, and that raising the
+level further does not fix it. See `docs/decisions/0004-dictation-overlay.md`.
+
+**Escape cancels a run.** It is registered only for the life of a dictation and
+released straight after, because a permanently registered Escape would swallow the
+key system-wide; `cancel_key_held` keeps the claim single-entry. Whether Escape stops
+the recording or merely discards the pending transcription is decided by the
+`finishing` gate, not by `AppState`.
+
 **Audio (`audio/capture.rs`)** — `cpal::Stream` is `!Send` on macOS, so one thread owns
 the stream for its whole life and everything else sends `Command`s over a channel and
 waits for a reply. The audio contract is fixed at 16 kHz mono f32 in `[-1, 1]`; downmix
@@ -108,6 +125,10 @@ type in the same edit. `src/lib/platform.ts` mirrors `platform::strings` the sam
 hand, and gets the platform from `@tauri-apps/plugin-os` rather than a custom command. `stores/appState.ts` is a `readable` fed by `get_recording_state` +
 the `state_changed` event; `stores/settings.ts` writes optimistically and then replaces
 state with whatever `update_settings` returns, since the backend may reject or normalise.
+There are two entry points, `index.html` and `overlay.html`, listed in
+`vite.config.ts` — a new window means a new entry there, a `label` in
+`tauri.conf.json`, and a capability file naming that label, or `listen`/`invoke` are
+denied in it. `src/overlay/` must not import `app.css`: it paints `body` opaque.
 
 ## Invariants worth not breaking
 
@@ -130,6 +151,11 @@ state with whatever `update_settings` returns, since the backend may reject or n
   values; `LanguageSelection::Fixed` is refused up front rather than silently ignored.
 - Closing the settings window hides it — a tray app must not quit on window close
   (`on_window_event` in `lib.rs`).
+- **The overlay is never focused, and `set_focus` is never called on it.** Insertion
+  pastes into whatever app has focus, so an overlay that became key would make itself
+  the paste target. It stays harmless because it is built `focusable: false`, which
+  tao turns into a `canBecomeKeyWindow` override on macOS and `WS_EX_NOACTIVATE` on
+  Windows. Keep that key in `tauri.conf.json`, and keep `apply` calling only `show`.
 - **Hotkey events can arrive concurrently.** Windows repeats `WM_HOTKEY` while a key is
   held and `global-hotkey` watches for the release on a thread per repeat, so `Released`
   can be delivered several times at once. `dictation::on_hotkey` claims an `AtomicBool`

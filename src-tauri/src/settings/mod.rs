@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::asr::LanguageSelection;
+use crate::overlay::OverlayAnchor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +34,10 @@ pub struct Settings {
     pub model_id: String,
     pub language: LanguageSelection,
     pub start_at_login: bool,
+    /// Show the floating indicator while dictating. On by default: a menu-bar
+    /// app that gives no sign it is recording reads as a broken hotkey.
+    pub show_overlay: bool,
+    pub overlay_anchor: OverlayAnchor,
 }
 
 impl Default for Settings {
@@ -44,6 +49,8 @@ impl Default for Settings {
             model_id: DEFAULT_MODEL_ID.to_string(),
             language: LanguageSelection::Auto,
             start_at_login: false,
+            show_overlay: true,
+            overlay_anchor: OverlayAnchor::default(),
         }
     }
 }
@@ -133,6 +140,27 @@ mod tests {
         assert_eq!(s.input_device, None);
     }
 
+    /// The overlay is the only feedback a menu-bar app gives while dictating,
+    /// so a fresh install has to have it on.
+    #[test]
+    fn the_overlay_defaults_to_on_and_out_of_the_way() {
+        let s = Settings::default();
+        assert!(s.show_overlay);
+        assert_eq!(s.overlay_anchor, OverlayAnchor::BottomCentre);
+    }
+
+    /// A settings file written before the overlay existed must not silently
+    /// turn it off.
+    #[test]
+    fn a_file_from_before_the_overlay_still_enables_it() {
+        let dir = temp_dir("pre-overlay");
+        let path = settings_path(&dir);
+        std::fs::write(&path, r#"{"hotkey":"Alt+D","start_at_login":true}"#).unwrap();
+        let s = Settings::load(&path);
+        assert!(s.show_overlay);
+        assert_eq!(s.overlay_anchor, OverlayAnchor::BottomCentre);
+    }
+
     #[test]
     fn missing_file_yields_defaults() {
         let dir = temp_dir("missing");
@@ -151,6 +179,8 @@ mod tests {
             language: LanguageSelection::Fixed("pl".into()),
             input_device: Some("MacBook Pro Microphone".into()),
             start_at_login: true,
+            show_overlay: false,
+            overlay_anchor: OverlayAnchor::TopRight,
             ..Settings::default()
         };
         s.save(&path).unwrap();

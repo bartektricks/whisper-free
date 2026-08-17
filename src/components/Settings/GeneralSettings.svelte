@@ -5,7 +5,7 @@
   import { settings } from "../../stores/settings";
   import { toAccelerator, formatAccelerator, toChord } from "../../lib/hotkey";
   import { trayName } from "../../lib/platform";
-  import type { RecordingMode } from "../../types";
+  import type { OverlayAnchor, RecordingMode } from "../../types";
 
   /**
    * How long to wait after the first combination before deciding it was the
@@ -195,6 +195,23 @@
   const activeHint = $derived(
     MODES.find((m) => m.value === $settings.recording_mode)?.hint ?? "",
   );
+
+  /**
+   * Laid out as they sit on screen: three rows of three, read left to right.
+   * The overlay ignores the mouse entirely, so it cannot be dragged into place
+   * — this grid is how it gets moved.
+   */
+  const ANCHORS: { value: OverlayAnchor; label: string }[] = [
+    { value: "top_left", label: "Top left" },
+    { value: "top_centre", label: "Top centre" },
+    { value: "top_right", label: "Top right" },
+    { value: "centre_left", label: "Centre left" },
+    { value: "centre", label: "Centre" },
+    { value: "centre_right", label: "Centre right" },
+    { value: "bottom_left", label: "Bottom left" },
+    { value: "bottom_centre", label: "Bottom centre" },
+    { value: "bottom_right", label: "Bottom right" },
+  ];
 </script>
 
 <!--
@@ -266,6 +283,42 @@
       {/each}
     </div>
   </Row>
+
+  <Row
+    label="Overlay"
+    hint="A small indicator floats above whatever you are working in while dictation runs. It never takes focus, and clicks pass straight through it."
+  >
+    <label class="checkbox">
+      <input
+        type="checkbox"
+        checked={$settings.show_overlay}
+        onchange={(e) => settings.update({ show_overlay: e.currentTarget.checked })}
+      />
+      Show while dictating
+    </label>
+
+    <div
+      class="anchors"
+      role="radiogroup"
+      aria-label="Overlay position"
+      aria-disabled={!$settings.show_overlay}
+    >
+      {#each ANCHORS as anchor (anchor.value)}
+        <button
+          type="button"
+          role="radio"
+          title={anchor.label}
+          aria-label={anchor.label}
+          aria-checked={$settings.overlay_anchor === anchor.value}
+          class:selected={$settings.overlay_anchor === anchor.value}
+          disabled={!$settings.show_overlay}
+          onclick={() => settings.update({ overlay_anchor: anchor.value })}
+        >
+          <span class="spot"></span>
+        </button>
+      {/each}
+    </div>
+  </Row>
 </section>
 
 <style>
@@ -329,5 +382,60 @@
     display: inline-flex;
     align-items: center;
     gap: 7px;
+  }
+
+  /* A miniature of the screen: nine cells, positioned as the overlay will be. */
+  .anchors {
+    display: grid;
+    width: fit-content;
+    grid-template-columns: repeat(3, 26px);
+    grid-template-rows: repeat(3, 20px);
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--panel);
+  }
+
+  .anchors button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .anchors button + button {
+    border-left: 1px solid var(--border);
+  }
+
+  /* The fourth cell onwards starts a new row, which needs a top edge instead. */
+  .anchors button:nth-child(3n + 1) {
+    border-left: none;
+  }
+
+  .anchors button:nth-child(n + 4) {
+    border-top: 1px solid var(--border);
+  }
+
+  .anchors button.selected {
+    background: var(--accent);
+  }
+
+  .anchors button:disabled {
+    opacity: 0.45;
+  }
+
+  .spot {
+    width: 8px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--text-dim);
+  }
+
+  .anchors button.selected .spot {
+    background: var(--accent-text);
   }
 </style>

@@ -113,6 +113,7 @@ src-tauri/src/
   asr/                   SpeechRecognizer trait — the model boundary
   audio/                 microphone capture, downmix, resampling
   state/                 the authoritative application state machine
+  overlay.rs             the floating indicator: whether it shows, and where
   settings/              persisted user settings
   platform/              the OS seam: mod.rs is the whole API
   platform/macos/        \_ one directory per platform, selected at compile time
@@ -129,6 +130,11 @@ Two boundaries are load-bearing and worth preserving:
   Linux means adding one directory and one `cfg_attr` line.
   See [`docs/decisions/0002-cross-platform-platform-layer.md`](docs/decisions/0002-cross-platform-platform-layer.md).
 
+The overlay is deliberately *not* one of them: it is an ordinary Tauri window
+built `focusable: false`, which is what stops it stealing the focus the paste
+depends on, on both platforms and without a line of OS-specific code. See
+[`docs/decisions/0004-dictation-overlay.md`](docs/decisions/0004-dictation-overlay.md).
+
 ## Status
 
 The full dictation loop is implemented: hotkey → record → transcribe →
@@ -138,6 +144,12 @@ Working today:
 
 - Menu-bar / notification-area app with a settings window, and an authoritative
   state machine
+- A floating indicator while dictation runs — it never takes focus, clicks pass
+  straight through it, its corner is yours to choose, and it can be switched off
+  in Settings › General. It cannot yet draw inside another app's full-screen
+  space; see the decision record for why
+- Escape abandons a dictation in progress: the recording is dropped, and a
+  transcription already running is discarded rather than pasted
 - Configurable global hotkey, including two-step chords, hold-to-talk or toggle
 - Microphone capture with device selection and a level test
 - Model download with progress, SHA-256 verification, and removal
