@@ -64,9 +64,11 @@ fn foreground_window_centre() -> Option<(f64, f64)> {
         return None;
     }
 
+    // Measured in floating point: a window spanning the whole virtual desktop
+    // would overflow the halfway point in `i32`.
     Some((
-        midpoint(rect.left, rect.right),
-        midpoint(rect.top, rect.bottom),
+        f64::midpoint(f64::from(rect.left), f64::from(rect.right)),
+        f64::midpoint(f64::from(rect.top), f64::from(rect.bottom)),
     ))
 }
 
@@ -81,11 +83,4 @@ fn pointer_position() -> Option<(f64, f64)> {
     }
 
     Some((f64::from(point.x), f64::from(point.y)))
-}
-
-/// Halfway between two edges, in floating point so a window spanning the whole
-/// virtual desktop cannot overflow on the way.
-fn midpoint(start: i32, end: i32) -> f64 {
-    let start = f64::from(start);
-    (start + f64::from(end)) / 2.0
 }
