@@ -1,0 +1,138 @@
+name: Release
+
+# Tag push cuts a public prerelease; workflow_dispatch builds the same bundles and
+# hands them back as workflow artifacts without touching Releases, which is how you
+# smoke-test a platform before committing to a tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The app version comes from src-tauri/Cargo.toml, not from the tag, so a tag that
+  # disagrees with it would publish `LocalDictation_0.1.0_aarch64.dmg` under `v0.2.0`.
+  # Fail in seconds rather than after two half-hour builds.
+  verify-version:
+    name: Verify version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the manifests
+        run: |
+          crate=$(sed -n 's/^version *= *"\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          pkg=$(jq -r .version package.json)
+          echo "Cargo.toml: $crate"
+          echo "package.json: $pkg"
+          if [ "$crate" != "$pkg" ]; then
+            echo "::error::src-tauri/Cargo.toml ($crate) and package.json ($pkg) disagree"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "Not a tag push — nothing else to check."
+            exit 0
+          fi
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag: $tag"
+          if [ "$crate" != "$tag" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match version $crate — bump the manifests or retag"
+            exit 1
+          fi
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: verify-version
+    runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # A tag ref cannot save an Actions cache that any other tag could read, so this
+      # restores whatever it can and never writes. Release builds are cold by nature:
+      # `lto = true` + `codegen-units = 1` plus the ONNX Runtime `ort-sys` downloads
+      # means budget ~20-30 min per platform.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          key: release-${{ matrix.target }}
+          save-if: false
+
+      # `beforeBuildCommand` is `bun run build`, and `tauri::generate_context!` will not
+      # compile without ../dist on disk, so the frontend deps must be installed first.
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+
+      # `windows-core` is pinned to 0.61 in Cargo.lock only — cpal 0.18 stops compiling
+      # on Windows if it floats to 0.62. --locked fails here, loudly, rather than
+      # letting the bundle build against a silently updated lockfile.
+      - name: Fetch dependencies (locked)
+        working-directory: src-tauri
+        run: cargo fetch --locked
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target ${{ matrix.target }}
+          # Empty on workflow_dispatch, which makes the action build without creating
+          # or uploading to a release.
+          tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          releaseName: ${{ github.event_name == 'push' && format('LocalDictation {0}', github.ref_name) || '' }}
+          releaseDraft: false
+          prerelease: true
+          generateReleaseNotes: true
+          uploadUpdaterJson: false
+          uploadWorkflowArtifacts: ${{ github.event_name == 'workflow_dispatch' }}
+          retryAttempts: 2
+          releaseBody: |
+            Both downloads are **unsigned**, so each platform will warn you once. Nothing
+            below needs admin rights.
+
+            ### macOS (Apple Silicon, macOS 13+)
+
+            Open the `.dmg`, drag **LocalDictation** to Applications, then clear the
+            quarantine flag:
+
+            ```sh
+            xattr -cr /Applications/LocalDictation.app
+            ```
+
+            Without that, macOS reports the app as damaged. Right-click → Open works too.
+
+            `LocalDictation.app.tar.gz` is the same app without the disk-image wrapper,
+            if you would rather unpack it yourself.
+
+            On first use the app asks for **Microphone** (to record) and **Accessibility**
+            (to paste into the app you are typing in), both in
+            System Settings › Privacy & Security.
+
+            ### Windows (64-bit, Windows 10/11)
+
+            Run the `-setup.exe`. SmartScreen will block it: **More info** → **Run anyway**.
+            It installs for the current user only.
+
+            ### First launch
+
+            LocalDictation has no Dock icon — it lives in the menu bar or the notification
+            area. The ~671 MB speech model is **not** bundled; download it from
+            Settings › Models before your first dictation. The installer being small is
+            expected.

@@ -20,11 +20,30 @@ These are architectural commitments, not settings you have to find and switch on
   model. After that it works fully offline; you can verify by pulling the
   Wi-Fi and dictating.
 
+## Download
+
+Built installers live on the [Releases page](https://github.com/bartektricks/whisper-free/releases):
+`LocalDictation_<version>_aarch64.dmg` for Apple Silicon Macs, and
+`LocalDictation_<version>_x64-setup.exe` for 64-bit Windows.
+
+Both are **unsigned**, so each platform warns you once. On macOS, drag the app to
+Applications and then clear the quarantine flag, or it is reported as damaged:
+
+```sh
+xattr -cr /Applications/LocalDictation.app
+```
+
+On Windows, SmartScreen blocks the installer until you choose **More info** →
+**Run anyway**. It installs for the current user, so no admin rights are needed.
+
+The installers are small because the ~671 MB speech model is not bundled — see
+[The speech model](#the-speech-model).
+
 ## Requirements
 
 - Apple Silicon Mac on macOS 13 or later, or 64-bit Windows 10/11
 - [Rust](https://rustup.rs) and [Bun](https://bun.sh); Xcode command line tools on
-  macOS, the MSVC build tools on Windows
+  macOS, the MSVC build tools on Windows — to build from source
 - ~700 MB of disk for the speech model
 
 ## Running it
@@ -57,6 +76,9 @@ cd src-tauri && cargo run --example mic_check 3   # record 3s and report levels
 `mic_check` is the quickest way to tell whether microphone permission and device
 selection are working — it prints duration, sample rate and peak level, and says
 plainly when it heard only silence.
+
+Cutting a release is a version bump and a `v*` tag; the rest is CI. See
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## The speech model
 

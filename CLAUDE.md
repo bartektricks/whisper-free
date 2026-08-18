@@ -25,6 +25,13 @@ cargo run --example mic_check 3                      # 3 s capture, prints durat
 cargo run --release --example pipeline_check a.wav   # installs model if missing, then model → ASR → dictionary
 ```
 
+Releases come from pushing a `v*` tag: `.github/workflows/release.yml` builds an
+unsigned Apple Silicon `.dmg` and Windows NSIS `-setup.exe` and publishes them as a
+GitHub prerelease. **The app version lives only in `src-tauri/Cargo.toml`** —
+`tauri.conf.json` has no `version` key on purpose, so Tauri falls back to the crate
+version; `package.json` mirrors it and the workflow fails if the two, or the tag,
+disagree. See `docs/RELEASING.md`.
+
 There is no root `Cargo.toml`; cargo commands run from `src-tauri/`. The examples are
 deliberately outside `cargo test` — they need a microphone, ~671 MB on disk, and network
 on first run. `LOCAL_DICTATION_LOG=local_dictation_lib=debug` overrides the log filter;
