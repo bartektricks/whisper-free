@@ -126,6 +126,53 @@ the menu bar or the Dock.
 display at a negative origin, and a work area smaller than the window are all covered
 by unit tests — the same separation as `hotkey::decide` and `state::is_valid`.
 
+## Which display it appears on
+
+An anchor still has to be resolved against *a* screen, and the first version used the
+screen under the pointer. That is the wrong screen twice over.
+
+The pointer is not where the user is working. It is left wherever it was last put —
+frequently on another display — while the typing, and therefore the paste, happens in
+the focused window. The indicator for text about to land in window X belongs on X's
+display.
+
+And the pointer lookup did not work anyway. `AppHandle::cursor_position` on macOS
+returns global points multiplied by the **primary** monitor's scale factor (tao
+`util::cursor_position`), while `monitor_from_point` compares that number against
+`CGDisplayBounds`, which is in **points** (tao `platform_impl/macos/monitor.rs`). On a
+2× display every coordinate handed to the lookup was therefore twice what it should be:
+usually nothing matched and the code fell back to the primary display, and on some
+arrangements a *different* monitor matched and the overlay appeared on the wrong one.
+Windows was never affected, since `GetCursorPos` and `MonitorFromPoint` are both in
+physical pixels.
+
+`platform::active_monitor` replaces it, and answers in one step: the focused window's
+display, else the pointer's, else `None` — leaving `overlay::apply` to fall back to the
+primary rather than being handed a guess. It lives in `platform/` because the coordinate
+space is a platform fact, not an application one.
+
+- **macOS** asks the Accessibility API: `AXFocusedApplication` → `AXFocusedWindow` →
+  `AXPosition`/`AXSize`. The permission is already required to paste, and the request is
+  read-only geometry — no title, no value, no application name — so nothing is learned
+  about what the user is doing. Two details worth keeping: the messaging timeout is
+  lowered to 250 ms, because accessibility calls are synchronous IPC that default to six
+  seconds and this runs on the main thread as dictation starts; and the pointer fallback
+  reads a synthetic `CGEvent`'s location rather than `NSEvent.mouseLocation`, whose
+  bottom-left origin would have to be flipped against the main display's height.
+- **Windows** asks `GetForegroundWindow` and `GetWindowRect`. No permission, and no
+  conversion — the virtual desktop is physical pixels throughout, which is the whole of
+  what the `ScreenUnit` argument records.
+
+Containment itself is a pure function over `MonitorBounds`, so the Retina case that
+caused all this is a unit test rather than something you need two monitors to see.
+
+The display is resolved on every call to `apply`, which is every state transition, so
+the pill follows focus if it moves between recording and insertion.
+
+Two things this does not solve, both deliberate: a window straddling two displays is
+placed on the one containing its centre, and a minimised or off-screen focused window
+falls through to the pointer rather than being forced onto a display.
+
 ## Errors
 
 An error shows the same user-facing sentence the tray does, then hides itself after

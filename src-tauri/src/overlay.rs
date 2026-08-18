@@ -198,17 +198,29 @@ pub fn apply(app: &AppHandle, ctx: &crate::AppContext, snapshot: &StateSnapshot)
             tracing::warn!(error = %e, "could not size the overlay");
         }
 
-        // The screen the pointer is on is the screen the user is working on.
-        let monitor = handle
-            .cursor_position()
-            .ok()
-            .and_then(|p| handle.monitor_from_point(p.x, p.y).ok().flatten())
+        // The screen holding the focused window is the screen the user is
+        // working on, and the screen the text is about to be pasted into.
+        // `platform::active_monitor` falls back to the pointer itself; the
+        // primary display is what is left when the desktop has focus and the
+        // pointer is somewhere the OS does not recognise.
+        let monitors = handle.available_monitors().unwrap_or_default();
+        let bounds: Vec<crate::platform::MonitorBounds> =
+            monitors.iter().map(Into::into).collect();
+
+        let monitor = crate::platform::active_monitor(&bounds)
+            .and_then(|index| monitors.get(index).cloned())
             .or_else(|| handle.primary_monitor().ok().flatten());
 
         if let Some(monitor) = monitor {
             let scale = monitor.scale_factor();
             let physical: PhysicalSize<u32> = size.to_physical(scale);
             let position = place(anchor, *monitor.work_area(), physical, INSET);
+            tracing::debug!(
+                event = "overlay_placed",
+                x = position.x,
+                y = position.y,
+                scale
+            );
             if let Err(e) = window.set_position(position) {
                 tracing::warn!(error = %e, "could not position the overlay");
             }
