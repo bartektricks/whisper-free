@@ -198,17 +198,36 @@ pub fn apply(app: &AppHandle, ctx: &crate::AppContext, snapshot: &StateSnapshot)
             tracing::warn!(error = %e, "could not size the overlay");
         }
 
-        // The screen the pointer is on is the screen the user is working on.
-        let monitor = handle
-            .cursor_position()
-            .ok()
-            .and_then(|p| handle.monitor_from_point(p.x, p.y).ok().flatten())
+        // The screen holding the focused window is the screen the user is
+        // working on, and the screen the text is about to be pasted into.
+        // `platform::active_monitor` falls back to the pointer itself; the
+        // primary display is what is left when the desktop has focus and the
+        // pointer is somewhere the OS does not recognise.
+        let monitors = handle.available_monitors().unwrap_or_default();
+        let bounds: Vec<crate::platform::MonitorBounds> =
+            monitors.iter().map(Into::into).collect();
+
+        let monitor = crate::platform::active_monitor(&bounds)
+            .and_then(|index| monitors.get(index).cloned())
             .or_else(|| handle.primary_monitor().ok().flatten());
 
         if let Some(monitor) = monitor {
             let scale = monitor.scale_factor();
             let physical: PhysicalSize<u32> = size.to_physical(scale);
-            let position = place(anchor, *monitor.work_area(), physical, INSET);
+            let top_left = place(anchor, *monitor.work_area(), physical, INSET);
+            tracing::debug!(
+                event = "overlay_placed",
+                x = top_left.x,
+                y = top_left.y,
+                scale
+            );
+
+            // `place` works in the target monitor's physical pixels, which is
+            // not necessarily what the window API measures against — on macOS
+            // it converts using the scale factor of the display the window is
+            // still on, which is the wrong one whenever the overlay is about to
+            // move between displays of different densities.
+            let position = crate::platform::window_position(top_left, scale);
             if let Err(e) = window.set_position(position) {
                 tracing::warn!(error = %e, "could not position the overlay");
             }

@@ -86,8 +86,18 @@ rather than against `AppState`, since state can be stale or `Error` after a fail
 from the same `state_changed` broadcast. `publish_state` emits before it calls
 `overlay::apply`, so the webview has the snapshot before the window appears, and
 `apply` posts its window work with `run_on_main_thread` rather than blocking the
-caller — which may be the hotkey handler. `place` is pure and tested per anchor.
-`platform::float_above_full_screen_apps` raises the window level; note that the
+caller — which may be the hotkey handler. `place` is pure and tested per anchor, and *which*
+display it is placed on comes from `platform::active_monitor` — the focused
+window's screen, then the pointer's, then the primary. Not Tauri's
+`monitor_from_point`: on macOS it compares against `CGDisplayBounds` in points
+while `cursor_position` returns points times the primary scale factor, so it
+misses on any Retina display. The backends supply only the two measurements and
+the `SCREEN_UNIT` they are in; the fallback order lives in `platform/mod.rs` and
+is tested there. **`place`'s output goes through `platform::window_position`
+before `set_position`** — it is in the *target* monitor's pixels, while tao on
+macOS converts against the display the window is still *on*, so a pill moving
+between displays of different densities lands on the wrong one.
+`platform::float_above_other_windows` raises the window level; note that the
 overlay still cannot enter another app's full-screen Space, and that raising the
 level further does not fix it. See `docs/decisions/0004-dictation-overlay.md`.
 

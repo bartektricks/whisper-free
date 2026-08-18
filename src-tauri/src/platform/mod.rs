@@ -23,7 +23,7 @@ compile_error!(
      src/platform/mod.rs — see docs/decisions/0002-cross-platform-platform-layer.md"
 );
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Monitor, PhysicalPosition, PhysicalSize, Position};
 
 use crate::text_insertion::TextInserter;
 
@@ -165,6 +165,150 @@ fn open(url: &str) {
     }
 }
 
+/// One monitor's geometry, in the units Tauri reports it in.
+///
+/// A plain copy of what [`tauri::Monitor`] carries, so the monitor-picking
+/// logic below is a pure function over data a test can build.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MonitorBounds {
+    pub position: PhysicalPosition<i32>,
+    pub size: PhysicalSize<u32>,
+    pub scale: f64,
+}
+
+impl From<&Monitor> for MonitorBounds {
+    fn from(monitor: &Monitor) -> Self {
+        Self {
+            position: *monitor.position(),
+            size: *monitor.size(),
+            scale: monitor.scale_factor(),
+        }
+    }
+}
+
+/// Which of `monitors` the user is working on, as an index into the slice.
+///
+/// The display holding the focused window, falling back to the display under
+/// the pointer — in that order, because the focused window is where dictated
+/// text is about to be pasted, and the pointer is often left on another screen.
+///
+/// `None` when neither can be resolved: nothing is focused, the platform
+/// refuses to say, or the answer lands outside every known monitor. Callers
+/// choose their own fallback rather than being handed a guess.
+///
+/// Deliberately *not* `AppHandle::monitor_from_point`: on macOS that compares
+/// against `CGDisplayBounds`, which is in points, while `cursor_position`
+/// returns points multiplied by the primary monitor's scale factor, so the
+/// lookup misses on any Retina display and silently falls back to the primary.
+#[must_use]
+pub fn active_monitor(monitors: &[MonitorBounds]) -> Option<usize> {
+    resolve_active_monitor(
+        monitors,
+        backend::focus::SCREEN_UNIT,
+        backend::focus::focused_window_centre,
+        backend::focus::pointer_position,
+    )
+}
+
+/// The order the two measurements are trusted in, given both of them.
+///
+/// Kept here rather than in each backend so that changing the order changes one
+/// place, and so the rule can be tested without a window server — the same
+/// split as [`crate::state::is_valid`] and [`crate::hotkey::decide`]. The
+/// backends supply only the measurements and the space they are in.
+///
+/// Both are taken lazily: resolving the pointer costs a synthetic event on
+/// macOS, and it is not needed when the focused window already answered.
+fn resolve_active_monitor(
+    monitors: &[MonitorBounds],
+    unit: ScreenUnit,
+    focused_window_centre: impl FnOnce() -> Option<(f64, f64)>,
+    pointer_position: impl FnOnce() -> Option<(f64, f64)>,
+) -> Option<usize> {
+    let focused =
+        focused_window_centre().and_then(|(x, y)| monitor_containing(monitors, x, y, unit));
+
+    if let Some(index) = focused {
+        tracing::debug!(event = "active_monitor", source = "focused_window", index);
+        return Some(index);
+    }
+
+    let pointer = pointer_position().and_then(|(x, y)| monitor_containing(monitors, x, y, unit));
+
+    tracing::debug!(
+        event = "active_monitor",
+        source = "pointer",
+        index = pointer,
+        "no focused window on a known display"
+    );
+    pointer
+}
+
+/// A window's top-left corner, in the units this platform positions windows in.
+///
+/// `physical` is measured against `monitor_scale`, the scale factor of the
+/// monitor the window is being *sent to*. That is not necessarily the scale
+/// factor the window API measures against: on macOS tao converts a physical
+/// position using the scale factor of the display the window is currently
+/// *on*, so a window moving between displays of different densities is placed
+/// against the wrong one — which is exactly what the overlay does for a living.
+/// Handing the platform the units it actually wants is the fix, and which units
+/// those are is a platform fact.
+#[must_use]
+// Windows hands the position straight back, which is a `const fn`; macOS
+// divides through `f64::from`, which is not. Only one platform can be right.
+#[cfg_attr(target_os = "windows", allow(clippy::missing_const_for_fn))]
+pub fn window_position(physical: PhysicalPosition<i32>, monitor_scale: f64) -> Position {
+    backend::focus::window_position(physical, monitor_scale)
+}
+
+/// The units a platform reports window and pointer positions in.
+///
+/// Not `pub`: only the backends name it, in the `SCREEN_UNIT` const that says
+/// which space the points they measure are in. Each backend names exactly one,
+/// so on any single platform the other variant is only ever constructed by the
+/// tests below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum ScreenUnit {
+    /// The same units as [`MonitorBounds`] — Windows measures the virtual
+    /// desktop in physical pixels throughout.
+    Physical,
+    /// Points. macOS reports every global coordinate in points, while
+    /// [`MonitorBounds`] has already been multiplied by each monitor's scale
+    /// factor, so the monitor is what has to be converted.
+    Logical,
+}
+
+/// The first monitor whose bounds contain the point `(x, y)`.
+///
+/// Pure, so every layout that has ever placed the overlay on the wrong screen
+/// can be written down as a test — the same split as [`crate::state::is_valid`]
+/// and [`crate::hotkey::decide`].
+fn monitor_containing(
+    monitors: &[MonitorBounds],
+    x: f64,
+    y: f64,
+    unit: ScreenUnit,
+) -> Option<usize> {
+    monitors.iter().position(|monitor| {
+        // A monitor reporting a nonsensical scale factor is measured as it is
+        // rather than dividing by zero.
+        let scale = if unit == ScreenUnit::Logical && monitor.scale > 0.0 {
+            monitor.scale
+        } else {
+            1.0
+        };
+
+        let left = f64::from(monitor.position.x) / scale;
+        let top = f64::from(monitor.position.y) / scale;
+        let right = left + f64::from(monitor.size.width) / scale;
+        let bottom = top + f64::from(monitor.size.height) / scale;
+
+        x >= left && x < right && y >= top && y < bottom
+    })
+}
+
 /// User-facing wording that names a part of the operating system.
 ///
 /// Errors in this app are written for a person and have to say *where* to fix
@@ -242,6 +386,147 @@ mod tests {
     fn the_paste_shortcut_names_the_v_key() {
         // Every platform's paste is <modifier>+V; only the modifier differs.
         assert!(strings::PASTE_SHORTCUT.ends_with('V'));
+    }
+
+    /// A 1x display at the origin, as Windows reports one.
+    fn plain(x: i32, y: i32, width: u32, height: u32) -> MonitorBounds {
+        MonitorBounds {
+            position: PhysicalPosition::new(x, y),
+            size: PhysicalSize::new(width, height),
+            scale: 1.0,
+        }
+    }
+
+    /// A 2x display: Tauri multiplies both the origin and the size by the
+    /// scale factor, while macOS reports window positions in points.
+    fn retina(x_points: i32, y_points: i32, width_points: u32, height_points: u32) -> MonitorBounds {
+        MonitorBounds {
+            position: PhysicalPosition::new(x_points * 2, y_points * 2),
+            size: PhysicalSize::new(width_points * 2, height_points * 2),
+            scale: 2.0,
+        }
+    }
+
+    #[test]
+    fn a_physical_point_picks_the_monitor_it_falls_inside() {
+        let monitors = [plain(0, 0, 1920, 1080), plain(1920, 0, 2560, 1440)];
+        assert_eq!(monitor_containing(&monitors, 100.0, 100.0, ScreenUnit::Physical), Some(0));
+        assert_eq!(monitor_containing(&monitors, 3000.0, 900.0, ScreenUnit::Physical), Some(1));
+    }
+
+    /// The regression this whole thing exists for: on a Retina display a point
+    /// measured in points must not be compared with a bound measured in
+    /// pixels, or every window past the halfway mark lands on the wrong screen.
+    #[test]
+    fn a_point_on_a_retina_display_is_not_compared_with_pixels() {
+        let monitors = [retina(0, 0, 1512, 982), plain(1512, 0, 2560, 1440)];
+
+        // Bottom-right corner of the built-in display, in points.
+        assert_eq!(monitor_containing(&monitors, 1400.0, 900.0, ScreenUnit::Logical), Some(0));
+        // Comparing that same point against pixels would have found the
+        // external display, since 1400 is past the built-in's 1512-point width
+        // once doubled.
+        assert_eq!(monitor_containing(&monitors, 2000.0, 900.0, ScreenUnit::Logical), Some(1));
+    }
+
+    /// A display to the left of the primary has a negative origin.
+    #[test]
+    fn a_monitor_at_a_negative_origin_is_found() {
+        let monitors = [plain(0, 0, 1920, 1080), plain(-2560, -100, 2560, 1440)];
+        assert_eq!(monitor_containing(&monitors, -1000.0, 500.0, ScreenUnit::Physical), Some(1));
+    }
+
+    /// A minimised window on Windows reports a rectangle far off the desktop,
+    /// and a window can be dragged partly off it. Neither may be forced onto a
+    /// monitor: the caller has a fallback and a guess would defeat it.
+    #[test]
+    fn a_point_outside_every_monitor_belongs_to_none() {
+        let monitors = [plain(0, 0, 1920, 1080)];
+        assert_eq!(monitor_containing(&monitors, -32000.0, -32000.0, ScreenUnit::Physical), None);
+        assert_eq!(monitor_containing(&monitors, 1920.0, 500.0, ScreenUnit::Physical), None);
+    }
+
+    #[test]
+    fn no_monitors_at_all_is_not_a_panic() {
+        assert_eq!(monitor_containing(&[], 0.0, 0.0, ScreenUnit::Physical), None);
+    }
+
+    /// The focused window is where the text is about to be pasted, so it wins
+    /// even when the pointer has been left on another screen — which is most of
+    /// the time.
+    #[test]
+    fn the_focused_window_outranks_the_pointer() {
+        let monitors = [plain(0, 0, 1920, 1080), plain(1920, 0, 2560, 1440)];
+        let index = resolve_active_monitor(
+            &monitors,
+            ScreenUnit::Physical,
+            || Some((3000.0, 700.0)),
+            || Some((100.0, 100.0)),
+        );
+        assert_eq!(index, Some(1));
+    }
+
+    /// A focused window the platform will not report, or one that is minimised
+    /// off the desktop, falls through rather than taking the caller's fallback
+    /// with it.
+    #[test]
+    fn the_pointer_answers_when_the_focused_window_cannot() {
+        let monitors = [plain(0, 0, 1920, 1080), plain(1920, 0, 2560, 1440)];
+
+        let unreported = resolve_active_monitor(
+            &monitors,
+            ScreenUnit::Physical,
+            || None,
+            || Some((3000.0, 700.0)),
+        );
+        assert_eq!(unreported, Some(1));
+
+        let minimised = resolve_active_monitor(
+            &monitors,
+            ScreenUnit::Physical,
+            || Some((-32000.0, -32000.0)),
+            || Some((3000.0, 700.0)),
+        );
+        assert_eq!(minimised, Some(1));
+    }
+
+    /// With nothing to go on the caller keeps its own fallback — being handed a
+    /// guess here would defeat it.
+    #[test]
+    fn neither_measurement_landing_anywhere_is_none() {
+        let monitors = [plain(0, 0, 1920, 1080)];
+        let index =
+            resolve_active_monitor(&monitors, ScreenUnit::Physical, || None, || Some((-1.0, -1.0)));
+        assert_eq!(index, None);
+    }
+
+    /// The pointer is not resolved when the focused window already answered:
+    /// on macOS that measurement costs a synthetic event.
+    #[test]
+    fn the_pointer_is_not_measured_when_it_is_not_needed() {
+        let monitors = [plain(0, 0, 1920, 1080)];
+        let mut asked = false;
+        let index = resolve_active_monitor(
+            &monitors,
+            ScreenUnit::Physical,
+            || Some((100.0, 100.0)),
+            || {
+                asked = true;
+                None
+            },
+        );
+        assert_eq!(index, Some(0));
+        assert!(!asked, "the pointer was measured for nothing");
+    }
+
+    #[test]
+    fn a_monitor_reporting_no_scale_factor_is_measured_as_it_is() {
+        let broken = MonitorBounds {
+            position: PhysicalPosition::new(0, 0),
+            size: PhysicalSize::new(1920, 1080),
+            scale: 0.0,
+        };
+        assert_eq!(monitor_containing(&[broken], 100.0, 100.0, ScreenUnit::Logical), Some(0));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! this module. Every item here is part of the backend contract documented in
 //! `platform/mod.rs`.
 
+pub mod focus;
 pub mod replay;
 pub mod text;
 pub mod window;
