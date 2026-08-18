@@ -46,8 +46,11 @@ Two properties are the point of this shape:
   code, so the rule that used to live in a doc comment is now enforced by the
   compiler.
 - **Every backend must supply the whole contract** — `text::Inserter`,
-  `become_menu_bar_app`, `DEFAULT_HOTKEY`, the three tray constants, and `strings` —
-  or it does not compile. A missing item is an error, not a silent divergence.
+  `replay::send`, the four `focus` items (`SCREEN_UNIT`,
+  `focused_window_centre`, `pointer_position`, `window_position`),
+  `become_menu_bar_app`, `float_above_other_windows`, `DEFAULT_HOTKEY`, the
+  three tray constants, and `strings` — or it does not compile. A missing item
+  is an error, not a silent divergence.
 
 The cost is that neither developer machine ever compiles the other's backend. That
 is why `.github/workflows/ci.yml` runs the matrix; it is not optional infrastructure.

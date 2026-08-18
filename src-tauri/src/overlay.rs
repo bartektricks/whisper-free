@@ -214,13 +214,20 @@ pub fn apply(app: &AppHandle, ctx: &crate::AppContext, snapshot: &StateSnapshot)
         if let Some(monitor) = monitor {
             let scale = monitor.scale_factor();
             let physical: PhysicalSize<u32> = size.to_physical(scale);
-            let position = place(anchor, *monitor.work_area(), physical, INSET);
+            let top_left = place(anchor, *monitor.work_area(), physical, INSET);
             tracing::debug!(
                 event = "overlay_placed",
-                x = position.x,
-                y = position.y,
+                x = top_left.x,
+                y = top_left.y,
                 scale
             );
+
+            // `place` works in the target monitor's physical pixels, which is
+            // not necessarily what the window API measures against — on macOS
+            // it converts using the scale factor of the display the window is
+            // still on, which is the wrong one whenever the overlay is about to
+            // move between displays of different densities.
+            let position = crate::platform::window_position(top_left, scale);
             if let Err(e) = window.set_position(position) {
                 tracing::warn!(error = %e, "could not position the overlay");
             }

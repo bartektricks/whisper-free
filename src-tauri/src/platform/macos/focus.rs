@@ -1,4 +1,5 @@
-//! Which display the user is working on.
+//! The screen coordinate space: which display the user is working on, and the
+//! units a window position is measured in.
 //!
 //! The overlay belongs on the screen the dictated text is about to land in,
 //! which is the screen holding the **focused window** — not the screen holding
@@ -11,7 +12,7 @@
 //!
 //! Every coordinate here is in points with a top-left origin, which is the
 //! space `AXPosition` and `CGEvent::location` both use — and the space
-//! `super::super::ScreenUnit::Logical` names.
+//! [`SCREEN_UNIT`] names.
 
 use std::ffi::c_void;
 use std::ptr;
@@ -21,8 +22,12 @@ use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::event::CGEvent;
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::{CGPoint, CGSize};
+use tauri::{LogicalPosition, PhysicalPosition, Position};
 
-use super::super::{monitor_containing, MonitorBounds, ScreenUnit};
+use super::super::ScreenUnit;
+
+/// macOS measures every global coordinate in points.
+pub const SCREEN_UNIT: ScreenUnit = ScreenUnit::Logical;
 
 /// An opaque `AXUIElementRef` / `AXValueRef`; both are CoreFoundation types.
 type AXUIElementRef = *const c_void;
@@ -47,6 +52,7 @@ extern "C" {
     fn AXUIElementCreateSystemWide() -> AXUIElementRef;
     fn AXUIElementGetTypeID() -> CFTypeID;
     fn AXValueGetTypeID() -> CFTypeID;
+    fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> AXError;
     fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> AXError;
     fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,
@@ -72,30 +78,8 @@ impl Drop for Owned {
     }
 }
 
-/// The display the user is working on: the focused window's, else the pointer's.
-pub fn active_monitor(monitors: &[MonitorBounds]) -> Option<usize> {
-    let focused = focused_window_centre()
-        .and_then(|point| monitor_containing(monitors, point.x, point.y, ScreenUnit::Logical));
-
-    if let Some(index) = focused {
-        tracing::debug!(event = "active_monitor", source = "focused_window", index);
-        return Some(index);
-    }
-
-    let pointer = pointer_position()
-        .and_then(|point| monitor_containing(monitors, point.x, point.y, ScreenUnit::Logical));
-
-    tracing::debug!(
-        event = "active_monitor",
-        source = "pointer",
-        index = pointer,
-        "no focused window on a known display"
-    );
-    pointer
-}
-
 /// The centre of the window with keyboard focus, in points.
-fn focused_window_centre() -> Option<CGPoint> {
+pub fn focused_window_centre() -> Option<(f64, f64)> {
     // SAFETY: takes no arguments and returns a +1 reference or null.
     let system = Owned(unsafe { AXUIElementCreateSystemWide() });
     if system.0.is_null() {
@@ -108,6 +92,19 @@ fn focused_window_centre() -> Option<CGPoint> {
     set_timeout(system.0);
 
     let app = element_attribute(system.0, "AXFocusedApplication")?;
+
+    // Never ask our own process. `AXUIElement.h` warns that an application
+    // talking to itself over the Accessibility API can deadlock, and this runs
+    // on the main thread, which is also the thread that would have to answer.
+    // The messaging timeout below would bound it to a stall rather than a
+    // freeze, but a stall on every state transition is still a freeze to the
+    // user — and when our own settings window has focus, the pointer is the
+    // better signal anyway.
+    if element_pid(app.0) == Some(std::process::id()) {
+        tracing::trace!("the focused application is this one; deferring to the pointer");
+        return None;
+    }
+
     set_timeout(app.0);
 
     let window = element_attribute(app.0, "AXFocusedWindow")?;
@@ -115,7 +112,7 @@ fn focused_window_centre() -> Option<CGPoint> {
     let position = point_attribute(window.0, "AXPosition")?;
     let size = size_attribute(window.0, "AXSize")?;
 
-    Some(CGPoint::new(
+    Some((
         position.x + size.width / 2.0,
         position.y + size.height / 2.0,
     ))
@@ -127,9 +124,44 @@ fn focused_window_centre() -> Option<CGPoint> {
 /// bottom-left origin would have to be flipped against the main display's
 /// height — one more thing to get wrong on a display arrangement no test can
 /// reach.
-fn pointer_position() -> Option<CGPoint> {
+pub fn pointer_position() -> Option<(f64, f64)> {
     let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
-    CGEvent::new(source).ok().map(|event| event.location())
+    let location = CGEvent::new(source).ok()?.location();
+    Some((location.x, location.y))
+}
+
+/// Points, because that is what `setFrameTopLeftPoint:` takes.
+///
+/// tao's `set_outer_position` divides a *physical* position by the scale factor
+/// of the display the window is currently on, not the one it is being sent to.
+/// A `Position::Logical` skips that conversion (`Position::to_logical` is the
+/// identity on one), so the point space macOS actually uses survives the trip
+/// and the overlay lands on the display it was placed against — even when the
+/// two displays have different densities.
+pub fn window_position(physical: PhysicalPosition<i32>, monitor_scale: f64) -> Position {
+    // A monitor reporting a nonsensical scale factor is measured as it is
+    // rather than dividing by zero, matching `monitor_containing`.
+    let scale = if monitor_scale > 0.0 { monitor_scale } else { 1.0 };
+
+    Position::Logical(LogicalPosition::new(
+        f64::from(physical.x) / scale,
+        f64::from(physical.y) / scale,
+    ))
+}
+
+/// The process an element belongs to, or `None` if it will not say.
+fn element_pid(element: AXUIElementRef) -> Option<u32> {
+    let mut pid: i32 = 0;
+
+    // SAFETY: `element` is a live `AXUIElement` and `pid` is a live, writable
+    // `pid_t`. Unlike the attribute calls this is answered locally, so it
+    // cannot block on the other application.
+    let status = unsafe { AXUIElementGetPid(element, ptr::addr_of_mut!(pid)) };
+    if status != AX_SUCCESS {
+        return None;
+    }
+
+    u32::try_from(pid).ok()
 }
 
 fn set_timeout(element: AXUIElementRef) {
@@ -208,4 +240,34 @@ fn copy_attribute(element: AXUIElementRef, name: &str) -> Option<Owned> {
     }
 
     Some(Owned(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The regression: the overlay was placed against the target monitor but
+    /// positioned against the one it was still on. With a 2× built-in and a 1×
+    /// external to its right, a pill placed on the external at physical x=2680
+    /// was handed to tao as a physical position, halved by the built-in's scale
+    /// factor, and appeared at 1340 points — in the middle of the built-in.
+    #[test]
+    fn a_position_on_a_one_x_display_survives_a_two_x_window() {
+        let placed = window_position(PhysicalPosition::new(2680, 1356), 1.0);
+        assert_eq!(placed, Position::Logical(LogicalPosition::new(2680.0, 1356.0)));
+    }
+
+    /// The same conversion on a Retina target: its physical pixels are twice
+    /// its points, and points are what macOS positions windows in.
+    #[test]
+    fn a_position_on_a_retina_display_is_halved_into_points() {
+        let placed = window_position(PhysicalPosition::new(1288, 1820), 2.0);
+        assert_eq!(placed, Position::Logical(LogicalPosition::new(644.0, 910.0)));
+    }
+
+    #[test]
+    fn a_monitor_reporting_no_scale_factor_is_measured_as_it_is() {
+        let placed = window_position(PhysicalPosition::new(100, 200), 0.0);
+        assert_eq!(placed, Position::Logical(LogicalPosition::new(100.0, 200.0)));
+    }
 }

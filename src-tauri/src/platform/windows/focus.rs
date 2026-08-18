@@ -1,49 +1,33 @@
-//! Which display the user is working on.
+//! The screen coordinate space: which display the user is working on, and the
+//! units a window position is measured in.
 //!
 //! The overlay belongs on the screen the dictated text is about to land in,
 //! which is the screen holding the **foreground window** — not the screen
 //! holding the pointer, which is frequently left somewhere else entirely.
 //!
 //! Windows measures the whole virtual desktop in physical pixels, the same
-//! units [`MonitorBounds`] carries, so nothing here is converted. That is the
-//! difference from the macOS backend, which works in points.
+//! units [`super::super::MonitorBounds`] carries, so nothing here is converted.
+//! That is the difference from the macOS backend, which works in points. tao
+//! calls `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` at startup, so
+//! the numbers below are real pixels rather than ones Windows has virtualised.
 
+use tauri::{PhysicalPosition, Position};
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetWindowRect,
 };
 
-use super::super::{monitor_containing, MonitorBounds, ScreenUnit};
+use super::super::ScreenUnit;
 
-/// The display the user is working on: the foreground window's, else the
-/// pointer's.
-pub fn active_monitor(monitors: &[MonitorBounds]) -> Option<usize> {
-    let foreground = foreground_window_centre()
-        .and_then(|(x, y)| monitor_containing(monitors, x, y, ScreenUnit::Physical));
-
-    if let Some(index) = foreground {
-        tracing::debug!(event = "active_monitor", source = "foreground_window", index);
-        return Some(index);
-    }
-
-    let pointer = pointer_position()
-        .and_then(|(x, y)| monitor_containing(monitors, x, y, ScreenUnit::Physical));
-
-    tracing::debug!(
-        event = "active_monitor",
-        source = "pointer",
-        index = pointer,
-        "no foreground window on a known display"
-    );
-    pointer
-}
+/// Windows measures the virtual desktop in physical pixels throughout.
+pub const SCREEN_UNIT: ScreenUnit = ScreenUnit::Physical;
 
 /// The centre of the foreground window, in physical pixels.
 ///
 /// A minimised window reports a rectangle far outside the desktop rather than
 /// failing, so the answer is allowed to fall outside every monitor —
-/// [`monitor_containing`] returns `None` and the pointer decides instead.
-fn foreground_window_centre() -> Option<(f64, f64)> {
+/// `monitor_containing` returns `None` and the pointer decides instead.
+pub fn focused_window_centre() -> Option<(f64, f64)> {
     // SAFETY: takes no arguments and returns a window handle or null.
     let window = unsafe { GetForegroundWindow() };
     if window.is_null() {
@@ -73,7 +57,7 @@ fn foreground_window_centre() -> Option<(f64, f64)> {
 }
 
 /// Where the pointer is, in physical pixels.
-fn pointer_position() -> Option<(f64, f64)> {
+pub fn pointer_position() -> Option<(f64, f64)> {
     let mut point = POINT { x: 0, y: 0 };
 
     // SAFETY: `point` is a live, writable `POINT`.
@@ -83,4 +67,30 @@ fn pointer_position() -> Option<(f64, f64)> {
     }
 
     Some((f64::from(point.x), f64::from(point.y)))
+}
+
+/// Physical pixels, unchanged: `SetWindowPos` takes virtual-desktop pixels, and
+/// tao passes a `Position::Physical` straight through to it.
+///
+/// The scale factor is part of the contract because macOS needs it; here the
+/// position is already in the units the window API wants.
+pub const fn window_position(physical: PhysicalPosition<i32>, _monitor_scale: f64) -> Position {
+    Position::Physical(physical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Windows wants the number `place` already produced. The scale factor is
+    /// in the signature for macOS's sake and must not be applied here, or a
+    /// window moving onto a 150% display would be positioned at two-thirds of
+    /// where it belongs.
+    #[test]
+    fn a_position_is_passed_through_whatever_the_scale_factor() {
+        let position = PhysicalPosition::new(2680, 1356);
+        assert_eq!(window_position(position, 1.0), Position::Physical(position));
+        assert_eq!(window_position(position, 1.5), Position::Physical(position));
+        assert_eq!(window_position(position, 2.0), Position::Physical(position));
+    }
 }

@@ -53,7 +53,7 @@ dictation logged `text_inserted chars=13 clipboard=Restored`.
 
 `always_on_top` maps to `NSFloatingWindowLevel` (3), which ties with every other
 floating window on screen — another app's picture-in-picture will happily cover the
-indicator. `platform::float_above_full_screen_apps` raises it to
+indicator. `platform::float_above_other_windows` raises it to
 `NSStatusWindowLevel` (25) and sets the Spaces collection behaviour, which is
 `platform/`'s only job in this feature. Two details cost time and are worth keeping:
 
@@ -118,9 +118,9 @@ in Settings.
 Named anchors also survive things pixel coordinates do not: a saved position from a
 monitor that has since been unplugged strands the overlay off-screen, while an anchor
 is meaningful on whichever display the user is working on. `apply` resolves it against
-the monitor under the pointer, falling back to the primary, and against that monitor's
-`work_area` so the inset is measured from usable screen rather than from underneath
-the menu bar or the Dock.
+the active monitor (the next section), falling back to the primary, and against that
+monitor's `work_area` so the inset is measured from usable screen rather than from
+underneath the menu bar or the Dock.
 
 `place` is a pure function over a rectangle and a size, so every anchor, a second
 display at a negative origin, and a work area smaller than the window are all covered
@@ -154,17 +154,49 @@ space is a platform fact, not an application one.
 - **macOS** asks the Accessibility API: `AXFocusedApplication` → `AXFocusedWindow` →
   `AXPosition`/`AXSize`. The permission is already required to paste, and the request is
   read-only geometry — no title, no value, no application name — so nothing is learned
-  about what the user is doing. Two details worth keeping: the messaging timeout is
+  about what the user is doing. Three details worth keeping: the messaging timeout is
   lowered to 250 ms, because accessibility calls are synchronous IPC that default to six
-  seconds and this runs on the main thread as dictation starts; and the pointer fallback
+  seconds and this runs on the main thread as dictation starts; the pointer fallback
   reads a synthetic `CGEvent`'s location rather than `NSEvent.mouseLocation`, whose
-  bottom-left origin would have to be flipped against the main display's height.
+  bottom-left origin would have to be flipped against the main display's height; and
+  **the focused application's pid is compared with our own before anything is asked of
+  it.** `AXUIElement.h` warns that an application talking to itself over this API can
+  deadlock, and the thread that would have to answer is the same main thread that is
+  blocked waiting — which is reachable simply by pressing the hotkey with the settings
+  window focused. The timeout would bound that to a stall rather than a hang, but a
+  stall on every state transition is a freeze as far as the user is concerned, and when
+  our own window has focus the pointer is the better signal anyway.
 - **Windows** asks `GetForegroundWindow` and `GetWindowRect`. No permission, and no
   conversion — the virtual desktop is physical pixels throughout, which is the whole of
   what the `ScreenUnit` argument records.
 
 Containment itself is a pure function over `MonitorBounds`, so the Retina case that
-caused all this is a unit test rather than something you need two monitors to see.
+caused all this is a unit test rather than something you need two monitors to see. So
+is the *order* the two measurements are trusted in: the backends supply
+`focused_window_centre`, `pointer_position` and the `SCREEN_UNIT` they are measured in,
+and `platform::active_monitor` owns the fallback. Two platforms cannot drift apart on
+the decision, and the decision is covered by tests.
+
+### Picking the display is only half of it
+
+Knowing the right monitor does not place the window on it. `place` works in the target
+monitor's physical pixels — that is what `work_area` is reported in — but
+`set_outer_position` on macOS converts a physical position using the scale factor of
+the display the window is **currently** on (tao `platform_impl/macos/window.rs`). While
+the overlay is still on a 2× built-in and the pill has been placed on a 1× external at
+x = 2680, that number is halved to 1340 points and the pill appears in the middle of
+the built-in display. The reverse direction sends it off-screen entirely, and it never
+converges, because the window's scale factor only changes once it has actually moved.
+
+Same class of bug as the `cursor_position` one above, and it was hidden by it: while
+the display lookup always fell back to the primary, the window was already there, so
+the two scale factors always agreed.
+
+So `platform::window_position` converts `place`'s output into whatever the platform
+positions windows in — a `Position::Logical` in points on macOS, which tao passes
+through untouched, and the unchanged `Position::Physical` on Windows, where
+`SetWindowPos` wants virtual-desktop pixels. Which units those are is a platform fact,
+so it sits beside `active_monitor` rather than in `overlay.rs`.
 
 The display is resolved on every call to `apply`, which is every state transition, so
 the pill follows focus if it moves between recording and insertion.
