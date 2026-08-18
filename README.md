@@ -77,7 +77,8 @@ cd src-tauri && cargo run --example mic_check 3   # record 3s and report levels
 selection are working — it prints duration, sample rate and peak level, and says
 plainly when it heard only silence.
 
-Cutting a release is a version bump and a `v*` tag; the rest is CI. See
+Releases are cut by hand from the Actions tab — bump the version, then run the
+Release workflow and pick release, prerelease or draft. See
 [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## The speech model
