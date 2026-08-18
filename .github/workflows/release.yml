@@ -1,0 +1,198 @@
+name: Release
+
+# Manual only. Nothing publishes itself: you choose from the Actions tab what gets
+# built and whether it becomes a release, a prerelease, a draft, or just artifacts
+# attached to the run. The tag is created for you from the version in Cargo.toml.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'What to publish'
+        type: choice
+        default: prerelease
+        options:
+          - prerelease
+          - release
+          - artifacts only (no release, no tag)
+      draft:
+        description: 'Draft — nothing is public until you press Publish. Ignored for artifacts only.'
+        type: boolean
+        default: false
+      platforms:
+        description: 'Which platforms to build'
+        type: choice
+        default: both
+        options:
+          - both
+          - macOS only
+          - Windows only
+      tag:
+        description: 'Tag to use. Blank means v + the version in src-tauri/Cargo.toml.'
+        type: string
+        required: false
+        default: ''
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Resolves the tag and the build matrix, and refuses a tag that disagrees with the
+  # manifests — otherwise a `v0.2.0` release would carry LocalDictation_0.1.0_*.
+  # Cheap enough to fail in seconds rather than after two half-hour builds.
+  resolve:
+    name: Resolve
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      publishing: ${{ steps.plan.outputs.publishing }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        # Inputs go through the environment, never straight into the script: `tag` is
+        # free text and would otherwise be an injection point.
+        env:
+          IN_TAG: ${{ inputs.tag }}
+          IN_PUBLISH: ${{ inputs.publish }}
+          IN_PLATFORMS: ${{ inputs.platforms }}
+          IN_DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+
+          version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          pkg=$(jq -r .version package.json)
+          if [ "$version" != "$pkg" ]; then
+            echo "::error::src-tauri/Cargo.toml ($version) and package.json ($pkg) disagree"
+            exit 1
+          fi
+
+          tag="${IN_TAG:-v$version}"
+          if [ "${tag#v}" != "$version" ]; then
+            echo "::error::tag $tag does not match version $version — bump the manifests or pick another tag"
+            exit 1
+          fi
+
+          mac='{"platform":"macos-latest","target":"aarch64-apple-darwin"}'
+          win='{"platform":"windows-latest","target":"x86_64-pc-windows-msvc"}'
+          case "$IN_PLATFORMS" in
+            "macOS only")   matrix="{\"include\":[$mac]}" ;;
+            "Windows only") matrix="{\"include\":[$win]}" ;;
+            *)              matrix="{\"include\":[$mac,$win]}" ;;
+          esac
+
+          publishing=true
+          [ "$IN_PUBLISH" = "artifacts only (no release, no tag)" ] && publishing=false
+
+          {
+            echo "tag=$tag"
+            echo "matrix=$matrix"
+            echo "publishing=$publishing"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release plan"
+            echo ""
+            if [ "$publishing" = false ]; then
+              echo "- **No release.** Bundles are attached to this run as workflow artifacts."
+            else
+              echo "- Tag \`$tag\` at \`${GITHUB_SHA:0:7}\` (created if it does not exist)"
+              echo "- Published as **$IN_PUBLISH**$([ "$IN_DRAFT" = true ] && echo ', as a **draft**')"
+            fi
+            echo "- Version \`$version\`, platforms: $IN_PLATFORMS"
+            if [ "$publishing" = true ] && [ "$IN_PLATFORMS" != both ]; then
+              echo ""
+              echo "> ⚠️ Only one platform is being built, so the release will be missing the other."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: resolve
+    runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Restores what it can and never writes: release builds run from whatever ref you
+      # dispatched, and GitHub scopes caches by ref, so saving here mostly produces
+      # entries nothing else can read. Cold builds are the norm — `lto = true` with
+      # `codegen-units = 1` plus the ONNX Runtime `ort-sys` download means budget
+      # ~20-30 min per platform.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          key: release-${{ matrix.target }}
+          save-if: false
+
+      # `beforeBuildCommand` is `bun run build`, and `tauri::generate_context!` will not
+      # compile without ../dist on disk, so the frontend deps must be installed first.
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+
+      # `windows-core` is pinned to 0.61 in Cargo.lock only — cpal 0.18 stops compiling
+      # on Windows if it floats to 0.62. --locked fails here, loudly, rather than
+      # letting the bundle build against a silently updated lockfile.
+      - name: Fetch dependencies (locked)
+        working-directory: src-tauri
+        run: cargo fetch --locked
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target ${{ matrix.target }}
+          # An empty tagName makes the action build and skip every upload, which is the
+          # "artifacts only" path.
+          tagName: ${{ needs.resolve.outputs.publishing == 'true' && needs.resolve.outputs.tag || '' }}
+          releaseName: ${{ needs.resolve.outputs.publishing == 'true' && format('LocalDictation {0}', needs.resolve.outputs.tag) || '' }}
+          prerelease: ${{ inputs.publish == 'prerelease' }}
+          releaseDraft: ${{ inputs.draft }}
+          generateReleaseNotes: true
+          uploadUpdaterJson: false
+          uploadWorkflowArtifacts: ${{ needs.resolve.outputs.publishing != 'true' }}
+          retryAttempts: 2
+          releaseBody: |
+            Both downloads are **unsigned**, so each platform will warn you once. Nothing
+            below needs admin rights.
+
+            ### macOS (Apple Silicon, macOS 13+)
+
+            Open the `.dmg`, drag **LocalDictation** to Applications, then clear the
+            quarantine flag:
+
+            ```sh
+            xattr -cr /Applications/LocalDictation.app
+            ```
+
+            Without that, macOS reports the app as damaged. Right-click → Open works too.
+
+            `LocalDictation.app.tar.gz` is the same app without the disk-image wrapper,
+            if you would rather unpack it yourself.
+
+            On first use the app asks for **Microphone** (to record) and **Accessibility**
+            (to paste into the app you are typing in), both in
+            System Settings › Privacy & Security.
+
+            ### Windows (64-bit, Windows 10/11)
+
+            Run the `-setup.exe`. SmartScreen will block it: **More info** → **Run anyway**.
+            It installs for the current user only.
+
+            ### First launch
+
+            LocalDictation has no Dock icon — it lives in the menu bar or the notification
+            area. The ~671 MB speech model is **not** bundled; download it from
+            Settings › Models before your first dictation. The installer being small is
+            expected.
