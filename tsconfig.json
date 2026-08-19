@@ -12,8 +12,10 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "types": ["node"]
+
   },
-  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "vite.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "vite.config.ts", "*.d.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
