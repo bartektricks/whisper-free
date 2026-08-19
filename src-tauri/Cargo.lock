@@ -2501,6 +2501,7 @@ dependencies = [
  "core-foundation",
  "core-graphics",
  "cpal",
+ "objc2",
  "objc2-app-kit",
  "rubato",
  "serde",

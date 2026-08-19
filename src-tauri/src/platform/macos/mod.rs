@@ -55,3 +55,34 @@ pub fn become_menu_bar_app(app: &mut tauri::App) {
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
     tracing::debug!("activation policy set to accessory");
 }
+
+/// Settle the activation the windowing layer asks for while the app launches,
+/// before anything is on screen for it to interrupt.
+///
+/// tao ends `applicationDidFinishLaunching` with
+/// `activateIgnoringOtherApps:`. A menu-bar app has no window on screen at that
+/// point, and macOS holds such a request until the app first displays one —
+/// which here is the tray menu, roughly 250 ms after the user opens it. The
+/// activation lands, and the menu shuts itself the first time it is opened in
+/// every run of the app.
+///
+/// Asking a second time once the event loop is running settles it: measured
+/// over five launches each, the first click keeps its menu, and no
+/// `AXApplicationActivated` reaches the app at all — so this does not make the
+/// app steal focus at startup, and the frontmost application is the same one
+/// before and after launch.
+///
+/// The deprecated call is the one that works. `activate`, its replacement, was
+/// measured over three launches and leaves the pending activation exactly where
+/// it was, menu flash included.
+pub fn settle_launch_activation() {
+    // AppKit only from the main thread, and this is called from the event loop.
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        tracing::error!("launch activation can only be settled on the main thread");
+        return;
+    };
+
+    #[allow(deprecated)]
+    objc2_app_kit::NSApp(mtm).activateIgnoringOtherApps(true);
+    tracing::debug!(event = "launch_activation_settled");
+}

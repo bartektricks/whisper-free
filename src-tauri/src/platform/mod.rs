@@ -95,6 +95,15 @@ pub fn become_menu_bar_app(app: &mut tauri::App) {
     backend::become_menu_bar_app(app);
 }
 
+/// Settle whatever activation the windowing layer asks for as the app launches,
+/// while there is still nothing on screen for it to interrupt.
+///
+/// Called once the event loop is running. A platform that activates a
+/// window-less app the moment it is asked has nothing to settle.
+pub fn settle_launch_activation() {
+    backend::settle_launch_activation();
+}
+
 /// Raise an always-on-top window above other floating windows, and let it
 /// follow the user between Spaces.
 ///
