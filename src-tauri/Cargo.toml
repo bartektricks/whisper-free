@@ -59,11 +59,15 @@ core-graphics = "0.25.0"
 # and tao, so the versions are pinned to match rather than to add a second copy.
 core-foundation = "0.10.1"
 
-# Only for the overlay's window level and Spaces behaviour, which Tauri does not
-# expose (`platform/macos/window.rs`). Already in the tree via tao, so the
-# versions are pinned to match rather than to pull in a second copy.
+# Two things Tauri does not expose: the overlay's window level and Spaces
+# behaviour (`platform/macos/window.rs`), and the launch activation settled in
+# `platform/macos/mod.rs`. Both are already in the tree via tao, so the versions
+# are pinned to match rather than to pull in a second copy. `objc2` itself is
+# here only for `MainThreadMarker`.
+objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",
+    "NSApplication",
     "NSResponder",
     "NSWindow",
 ] }

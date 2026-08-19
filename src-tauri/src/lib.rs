@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tracing_appender::non_blocking::WorkerGuard;
 
 use settings::Settings;
@@ -420,7 +420,15 @@ pub fn run() {
     // Nothing has been drawn yet at this point, so there is no window to report
     // into — the log is the only place a startup failure can be recorded.
     match app {
-        Ok(app) => app.run(|_, _| {}),
+        Ok(app) => app.run(|_, event| {
+            // The activation the windowing layer asks for during launch is held
+            // by macOS until the app first puts something on screen. For a
+            // menu-bar app that is the tray menu, which the activation then
+            // closes again — so it is settled here, while nothing is open.
+            if matches!(event, RunEvent::Ready) {
+                platform::settle_launch_activation();
+            }
+        }),
         Err(e) => tracing::error!(error = %e, "LocalDictation could not start"),
     }
 }

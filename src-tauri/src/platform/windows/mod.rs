@@ -57,6 +57,13 @@ pub fn become_menu_bar_app(_app: &mut tauri::App) {
     tracing::debug!("no activation policy to set on Windows");
 }
 
+/// Nothing to do: Windows has no deferred activation to settle. Foreground
+/// ownership is decided per window as each one is shown, and a notification-area
+/// menu is a popup of the tray window rather than the app's first window.
+pub fn settle_launch_activation() {
+    tracing::debug!("no launch activation to settle on Windows");
+}
+
 /// Nothing to do: `HWND_TOPMOST`, which is what Tauri's `always_on_top` sets,
 /// already puts the window above every other application. Windows has
 /// no equivalent of a full-screen Space to be excluded from.

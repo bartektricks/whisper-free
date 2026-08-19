@@ -174,6 +174,15 @@ denied in it. `src/overlay/` must not import `app.css`: it paints `body` opaque.
   the paste target. It stays harmless because it is built `focusable: false`, which
   tao turns into a `canBecomeKeyWindow` override on macOS and `WS_EX_NOACTIVATE` on
   Windows. Keep that key in `tauri.conf.json`, and keep `apply` calling only `show`.
+- **The activation macOS defers at launch has to be settled before the first click.**
+  tao ends `applicationDidFinishLaunching` with `activateIgnoringOtherApps:`, and macOS
+  holds a request from a window-less app until it first puts something on screen. For a
+  menu-bar app that is the tray menu — so the activation lands ~250 ms after the menu
+  opens and closes it again, on the first click of every run.
+  `platform::settle_launch_activation`, called from the `RunEvent::Ready` arm in `run`,
+  asks a second time while nothing is open, which settles the request without the app
+  ever becoming active or taking focus from anyone. The deprecated call is the one that
+  works: `activate`, its replacement, leaves the pending activation exactly as it was.
 - **Hotkey events can arrive concurrently.** Windows repeats `WM_HOTKEY` while a key is
   held and `global-hotkey` watches for the release on a thread per repeat, so `Released`
   can be delivered several times at once. `dictation::on_hotkey` claims an `AtomicBool`
