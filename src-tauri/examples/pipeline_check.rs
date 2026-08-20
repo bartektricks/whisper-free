@@ -80,10 +80,16 @@ fn read_wav(path: &PathBuf) -> Result<AudioBuffer, String> {
                 return Err(format!("expected 16-bit samples, found {bits}"));
             }
             let end = (body + size).min(bytes.len());
+            // `as_chunks` rather than `chunks_exact(2)`: the const-generic
+            // form hands back `&[u8; 2]`, which `from_le_bytes` takes whole.
+            // Both drop a trailing odd byte, so a truncated `data` chunk is
+            // handled the same way.
             samples = bytes[body..end]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 // i16::MAX, matching how transcribe-rs scales WAV input.
-                .map(|c| f32::from(i16::from_le_bytes([c[0], c[1]])) / f32::from(i16::MAX))
+                .map(|c| f32::from(i16::from_le_bytes(*c)) / f32::from(i16::MAX))
                 .collect();
         }
         pos = body + size + (size & 1);
