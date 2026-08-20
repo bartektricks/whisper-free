@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use local_dictation_lib::audio::AudioEngine;
+use whisper_free_lib::audio::AudioEngine;
 
 fn main() {
     let seconds: u64 = std::env::args()

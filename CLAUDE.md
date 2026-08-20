@@ -4,11 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-LocalDictation: a macOS menu-bar / Windows notification-area app (Tauri 2 + Rust backend,
+WhisperFree: a macOS menu-bar / Windows notification-area app (Tauri 2 + Rust backend,
 Svelte 5 + TS frontend) that records on a global hotkey, transcribes locally with Parakeet
-TDT 0.6B v3 through ONNX Runtime, and pastes the text into the focused app. Directory name
-is `whisper-free`; the product, crate (`local-dictation`), and bundle id
-(`com.bartek.localdictation`) are not.
+TDT 0.6B v3 through ONNX Runtime, and pastes the text into the focused app. The directory,
+product, and crate are all `whisper-free`; the bundle id is `com.bartek.whisperfree`.
 
 ## Commands
 
@@ -35,10 +34,10 @@ or the chosen tag, disagree. See `docs/RELEASING.md`.
 
 There is no root `Cargo.toml`; cargo commands run from `src-tauri/`. The examples are
 deliberately outside `cargo test` — they need a microphone, ~671 MB on disk, and network
-on first run. `LOCAL_DICTATION_LOG=local_dictation_lib=debug` overrides the log filter;
-logs land in `~/Library/Logs/com.bartek.localdictation/`, user data in
-`~/Library/Application Support/com.bartek.localdictation/` (`settings.json`,
-`dictionary.json`, `models/`) — `%APPDATA%\com.bartek.localdictation\` on Windows. Paths
+on first run. `WHISPER_FREE_LOG=whisper_free_lib=debug` overrides the log filter;
+logs land in `~/Library/Logs/com.bartek.whisperfree/`, user data in
+`~/Library/Application Support/com.bartek.whisperfree/` (`settings.json`,
+`dictionary.json`, `models/`) — `%APPDATA%\com.bartek.whisperfree\` on Windows. Paths
 always come from Tauri's resolver, never hardcoded.
 
 The Windows backend **cannot be cross-compiled from macOS** (`ring`'s C build needs the

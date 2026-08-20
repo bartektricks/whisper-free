@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    local_dictation_lib::run();
+    whisper_free_lib::run();
 }

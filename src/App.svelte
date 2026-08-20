@@ -29,7 +29,7 @@
 
 <div class="shell">
   <nav>
-    <div class="brand">LocalDictation</div>
+    <div class="brand">WhisperFree</div>
     <ul>
       {#each SECTIONS as section (section.id)}
         <li>

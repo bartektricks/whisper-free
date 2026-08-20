@@ -41,7 +41,7 @@ env:
 
 jobs:
   # Resolves the tag and the build matrix, and refuses a tag that disagrees with the
-  # manifests — otherwise a `v0.2.0` release would carry LocalDictation_0.1.0_*.
+  # manifests — otherwise a `v0.2.0` release would carry WhisperFree_0.1.0_*.
   # Cheap enough to fail in seconds rather than after two half-hour builds.
   resolve:
     name: Resolve
@@ -156,7 +156,7 @@ jobs:
           # An empty tagName makes the action build and skip every upload, which is the
           # "artifacts only" path.
           tagName: ${{ needs.resolve.outputs.publishing == 'true' && needs.resolve.outputs.tag || '' }}
-          releaseName: ${{ needs.resolve.outputs.publishing == 'true' && format('LocalDictation {0}', needs.resolve.outputs.tag) || '' }}
+          releaseName: ${{ needs.resolve.outputs.publishing == 'true' && format('WhisperFree {0}', needs.resolve.outputs.tag) || '' }}
           prerelease: ${{ inputs.publish == 'prerelease' }}
           releaseDraft: ${{ inputs.draft }}
           generateReleaseNotes: true
@@ -169,16 +169,16 @@ jobs:
 
             ### macOS (Apple Silicon, macOS 13+)
 
-            Open the `.dmg`, drag **LocalDictation** to Applications, then clear the
+            Open the `.dmg`, drag **WhisperFree** to Applications, then clear the
             quarantine flag:
 
             ```sh
-            xattr -cr /Applications/LocalDictation.app
+            xattr -cr /Applications/WhisperFree.app
             ```
 
             Without that, macOS reports the app as damaged. Right-click → Open works too.
 
-            `LocalDictation.app.tar.gz` is the same app without the disk-image wrapper,
+            `WhisperFree.app.tar.gz` is the same app without the disk-image wrapper,
             if you would rather unpack it yourself.
 
             On first use the app asks for **Microphone** (to record) and **Accessibility**
@@ -192,7 +192,7 @@ jobs:
 
             ### First launch
 
-            LocalDictation has no Dock icon — it lives in the menu bar or the notification
+            WhisperFree has no Dock icon — it lives in the menu bar or the notification
             area. The ~671 MB speech model is **not** bundled; download it from
             Settings › Models before your first dictation. The installer being small is
             expected.

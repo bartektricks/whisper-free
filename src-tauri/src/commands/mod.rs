@@ -491,7 +491,7 @@ fn apply_start_at_login(app: &AppHandle, enabled: bool) -> CommandResult<()> {
     result.map_err(|e| {
         tracing::warn!(error = %e, enabled, "could not change the login item");
         format!(
-            "Starting at login could not be changed. You can add LocalDictation manually in {}.",
+            "Starting at login could not be changed. You can add WhisperFree manually in {}.",
             crate::platform::strings::LOGIN_ITEMS_SETTINGS
         )
     })?;

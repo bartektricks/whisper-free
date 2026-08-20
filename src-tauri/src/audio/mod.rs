@@ -62,7 +62,7 @@ impl AudioError {
         match self {
             Self::PermissionDenied => {
                 format!(
-                    "LocalDictation needs microphone access. Grant it in {}, then try again.",
+                    "WhisperFree needs microphone access. Grant it in {}, then try again.",
                     crate::platform::strings::MICROPHONE_SETTINGS
                 )
             }

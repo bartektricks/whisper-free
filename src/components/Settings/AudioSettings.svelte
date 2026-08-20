@@ -96,7 +96,7 @@
       {:else}
         <p class="error">
           Recorded {(result.duration_ms / 1000).toFixed(1)}s but heard only silence. Check
-          that the right microphone is selected and that LocalDictation is allowed in
+          that the right microphone is selected and that WhisperFree is allowed in
           {microphoneSettings()}.
         </p>
       {/if}

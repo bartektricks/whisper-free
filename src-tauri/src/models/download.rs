@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn digest_of_a_known_file_matches_sha256() {
-        let path = std::env::temp_dir().join("localdictation-digest-test.txt");
+        let path = std::env::temp_dir().join("whisperfree-digest-test.txt");
         std::fs::write(&path, b"abc").unwrap();
         assert_eq!(
             file_digest(&path).unwrap(),

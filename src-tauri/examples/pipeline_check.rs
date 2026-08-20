@@ -25,9 +25,9 @@
 
 use std::path::PathBuf;
 
-use local_dictation_lib::asr::{AudioBuffer, SpeechRecognizer, TranscriptionOptions};
-use local_dictation_lib::dictionary::Dictionary;
-use local_dictation_lib::models::{download, ModelStore};
+use whisper_free_lib::asr::{AudioBuffer, SpeechRecognizer, TranscriptionOptions};
+use whisper_free_lib::dictionary::Dictionary;
+use whisper_free_lib::models::{download, ModelStore};
 
 /// The same directory the app uses, without a Tauri app to ask.
 ///
@@ -35,7 +35,7 @@ use local_dictation_lib::models::{download, ModelStore};
 /// just to read a path — but it has to stay in step with it, so a model
 /// installed here is the one the app finds.
 fn data_dir() -> PathBuf {
-    const BUNDLE_ID: &str = "com.bartek.localdictation";
+    const BUNDLE_ID: &str = "com.bartek.whisperfree";
 
     #[cfg(target_os = "macos")]
     {
@@ -103,7 +103,7 @@ fn main() {
     }
 
     let store = ModelStore::new(&data_dir());
-    let descriptor = local_dictation_lib::models::find("parakeet-tdt-0.6b-v3").unwrap();
+    let descriptor = whisper_free_lib::models::find("parakeet-tdt-0.6b-v3").unwrap();
 
     println!("Model store: {}", store.root().display());
     if store.is_installed(descriptor) {
@@ -132,7 +132,7 @@ fn main() {
         }
     }
 
-    let mut recognizer = local_dictation_lib::asr::parakeet::ParakeetRecognizer::new(
+    let mut recognizer = whisper_free_lib::asr::parakeet::ParakeetRecognizer::new(
         descriptor.id,
         store.dir_for(descriptor.id),
         descriptor.languages(),

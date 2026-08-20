@@ -1,4 +1,4 @@
-# LocalDictation
+# WhisperFree
 
 Fully local dictation for macOS and Windows. Press a hotkey, speak, and the text
 appears where your cursor is. Polish and English, detected automatically.
@@ -23,14 +23,14 @@ These are architectural commitments, not settings you have to find and switch on
 ## Download
 
 Built installers live on the [Releases page](https://github.com/bartektricks/whisper-free/releases):
-`LocalDictation_<version>_aarch64.dmg` for Apple Silicon Macs, and
-`LocalDictation_<version>_x64-setup.exe` for 64-bit Windows.
+`WhisperFree_<version>_aarch64.dmg` for Apple Silicon Macs, and
+`WhisperFree_<version>_x64-setup.exe` for 64-bit Windows.
 
 Both are **unsigned**, so each platform warns you once. On macOS, drag the app to
 Applications and then clear the quarantine flag, or it is reported as damaged:
 
 ```sh
-xattr -cr /Applications/LocalDictation.app
+xattr -cr /Applications/WhisperFree.app
 ```
 
 On Windows, SmartScreen blocks the installer until you choose **More info** →
@@ -83,7 +83,7 @@ Release workflow and pick release, prerelease or draft. See
 
 ## The speech model
 
-LocalDictation runs [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
+WhisperFree runs [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
 which handles 25 European languages, detects the spoken language on its own, and
 produces punctuation and capitalisation.
 
@@ -95,8 +95,8 @@ is used.
 Models are installed to:
 
 ```
-macOS    ~/Library/Application Support/com.bartek.localdictation/models/
-Windows  %APPDATA%\com.bartek.localdictation\models\
+macOS    ~/Library/Application Support/com.bartek.whisperfree/models/
+Windows  %APPDATA%\com.bartek.whisperfree\models\
 ```
 
 Why this model and this runtime — including the measurements behind the choice,
@@ -122,7 +122,7 @@ Both are grantable in System Settings › Privacy & Security.
 
 **Windows** asks for neither. Microphone access is governed by the toggle in
 Settings › Privacy & security › Microphone, and pasting needs no permission at
-all — with one exception: Windows will not let LocalDictation paste into a window
+all — with one exception: Windows will not let WhisperFree paste into a window
 belonging to a program running as administrator. When that happens the
 transcription is left on the clipboard and the app says so, so nothing is lost.
 

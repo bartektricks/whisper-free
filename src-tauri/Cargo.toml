@@ -1,5 +1,5 @@
 [package]
-name = "local-dictation"
+name = "whisper-free"
 version = "0.1.0"
 description = "Fully local dictation"
 authors = ["Bartlomiej Ciszewski"]
@@ -9,7 +9,7 @@ license = "MIT"
 [lib]
 # The `_lib` suffix keeps the lib name distinct from the bin name.
 # See https://github.com/rust-lang/cargo/issues/8519
-name = "local_dictation_lib"
+name = "whisper_free_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
