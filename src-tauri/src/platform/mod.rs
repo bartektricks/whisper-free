@@ -154,7 +154,7 @@ pub const fn tray_menu_on_left_click() -> bool {
 /// Best effort: a failure to launch the settings app is logged, not surfaced,
 /// because the message that offered the button already names the pane in words.
 pub fn open_microphone_settings() {
-    open(strings::MICROPHONE_SETTINGS_URL);
+    open_url(strings::MICROPHONE_SETTINGS_URL);
 }
 
 /// Open the system settings page where permission to synthesise input is
@@ -164,13 +164,19 @@ pub fn open_microphone_settings() {
 /// permission — so this does nothing there.
 pub fn open_input_permission_settings() {
     if let Some(url) = strings::INPUT_PERMISSION_SETTINGS_URL {
-        open(url);
+        open_url(url);
     }
 }
 
-fn open(url: &str) {
+/// Hand a URL to the system browser or settings app.
+///
+/// Public because the release notes an update offers live on the web rather
+/// than in a settings pane, and the URL is never opened from the webview: the
+/// settings window has no `opener` capability, and giving it one would be the
+/// first piece of application behaviour that lives in the frontend.
+pub fn open_url(url: &str) {
     if let Err(e) = tauri_plugin_opener::open_url(url, None::<&str>) {
-        tracing::warn!(error = %e, "could not open the system settings page");
+        tracing::warn!(error = %e, "could not open a link");
     }
 }
 
@@ -342,6 +348,10 @@ pub mod strings {
 
     /// Where the user manages which apps start with the system, in words.
     pub const LOGIN_ITEMS_SETTINGS: &str = backend::strings::LOGIN_ITEMS_SETTINGS;
+
+    /// Where an installed copy of the app lives, in words, for the messages an
+    /// update writes when it cannot replace it.
+    pub const INSTALL_LOCATION: &str = backend::strings::INSTALL_LOCATION;
 
     /// Where permission to synthesise input is granted, or `None` where the
     /// platform has no such permission.

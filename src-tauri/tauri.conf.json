@@ -50,6 +50,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -57,5 +58,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVFRjc5RDY3MUY5ODFBNzkKUldSNUdwZ2ZaNTMzWGppK21hUXZkRlRMRzVuRFhtdUwwcWsvL1Q4N1hZQ1kzb0RtRFcrakJBS0MK",
+      "endpoints": [
+        "https://github.com/bartektricks/whisper-free/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -45,6 +45,7 @@ export interface Settings {
   overlay_anchor: OverlayAnchor;
   refine_enabled: boolean;
   refine_model_id: string;
+  check_for_updates: boolean;
 }
 
 /** Mirrors `audio::AudioDevice`. */
@@ -95,6 +96,30 @@ export interface DownloadProgress {
 export interface DownloadFailure {
   model_id: string;
   message: string;
+}
+
+/** Mirrors `update::UpdatePhase`. */
+export type UpdatePhase =
+  | "idle"
+  | "checking"
+  | "up_to_date"
+  | "available"
+  | "downloading"
+  | "ready_to_restart"
+  | "failed";
+
+/** Mirrors `update::UpdateStatus`. */
+export interface UpdateStatus {
+  phase: UpdatePhase;
+  /** The version on offer, once a check has found one. */
+  version: string | null;
+  /** Where to read what changed, on the releases page. */
+  release_url: string | null;
+  downloaded_bytes: number;
+  /** Zero until the server announces a length, which it need not do. */
+  total_bytes: number;
+  /** User-facing failure text; only set in the `failed` phase. */
+  message: string | null;
 }
 
 /** Mirrors `dictionary::DictionaryEntry`. */

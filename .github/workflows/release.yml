@@ -50,6 +50,7 @@ jobs:
       tag: ${{ steps.plan.outputs.tag }}
       matrix: ${{ steps.plan.outputs.matrix }}
       publishing: ${{ steps.plan.outputs.publishing }}
+      updating: ${{ steps.plan.outputs.updating }}
     steps:
       - uses: actions/checkout@v7
       - id: plan
@@ -60,6 +61,10 @@ jobs:
           IN_PUBLISH: ${{ inputs.publish }}
           IN_PLATFORMS: ${{ inputs.platforms }}
           IN_DRAFT: ${{ inputs.draft }}
+          # The value never reaches the log — only whether one is set. Without
+          # it the bundler emits no `.sig`, `tauri-action` skips latest.json,
+          # and the release silently reaches nobody's installed copy.
+          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
           set -euo pipefail
 
@@ -87,10 +92,24 @@ jobs:
           publishing=true
           [ "$IN_PUBLISH" = "artifacts only (no release, no tag)" ] && publishing=false
 
+          if [ "$publishing" = true ] && [ "$HAS_SIGNING_KEY" != true ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set — see docs/RELEASING.md"
+            exit 1
+          fi
+
+          # Only a published, non-draft, non-prerelease build reaches installed
+          # copies: the updater endpoint is releases/latest/download/latest.json,
+          # and GitHub resolves `latest` to neither a prerelease nor a draft.
+          updating=false
+          if [ "$publishing" = true ] && [ "$IN_PUBLISH" = release ] && [ "$IN_DRAFT" != true ]; then
+            updating=true
+          fi
+
           {
             echo "tag=$tag"
             echo "matrix=$matrix"
             echo "publishing=$publishing"
+            echo "updating=$updating"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -103,9 +122,17 @@ jobs:
               echo "- Published as **$IN_PUBLISH**$([ "$IN_DRAFT" = true ] && echo ', as a **draft**')"
             fi
             echo "- Version \`$version\`, platforms: $IN_PLATFORMS"
+            if [ "$updating" = true ]; then
+              echo "- **Existing installs will be offered this version.**"
+            elif [ "$publishing" = true ]; then
+              echo "- Existing installs are *not* offered this version — only a published, non-draft \`release\` becomes Latest."
+            fi
             if [ "$publishing" = true ] && [ "$IN_PLATFORMS" != both ]; then
               echo ""
               echo "> ⚠️ Only one platform is being built, so the release will be missing the other."
+              if [ "$updating" = true ]; then
+                echo "> Its users will be told no update is published for their computer."
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -151,6 +178,12 @@ jobs:
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Update signing, which is not code signing: it is what the pubkey in
+          # tauri.conf.json verifies, it needs no Apple or Authenticode
+          # certificate, and without it `createUpdaterArtifacts` produces
+          # bundles the installed app will refuse.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target ${{ matrix.target }}
           # An empty tagName makes the action build and skip every upload, which is the
@@ -160,7 +193,11 @@ jobs:
           prerelease: ${{ inputs.publish == 'prerelease' }}
           releaseDraft: ${{ inputs.draft }}
           generateReleaseNotes: true
-          uploadUpdaterJson: false
+          # Written for every release, prerelease and draft included: the
+          # manifest is an asset on that release, and only the one GitHub calls
+          # Latest is ever fetched. Both matrix jobs write it, and the action
+          # merges the platform it built into whatever is already there.
+          uploadUpdaterJson: ${{ needs.resolve.outputs.publishing == 'true' }}
           uploadWorkflowArtifacts: ${{ needs.resolve.outputs.publishing != 'true' }}
           retryAttempts: 2
           releaseBody: |
@@ -196,3 +233,71 @@ jobs:
             area. The ~671 MB speech model is **not** bundled; download it from
             Settings › Models before your first dictation. The installer being small is
             expected.
+
+            ### Updates
+
+            From this version on, WhisperFree can update itself: Settings › Updates has a
+            **Check now** button, and an optional daily check that is off until you switch
+            it on. An update installed that way needs no `xattr -cr` — that step is only
+            for a fresh download from this page.
+
+  # `tauri-action` writes latest.json by reading the copy already attached to
+  # the release, merging in the platform it just built, and re-uploading it.
+  # Two matrix jobs doing that concurrently can have both read before either
+  # writes, and the loser's platform disappears — the same family of race as
+  # the find-or-create one in docs/RELEASING.md, and just as unlikely. It is
+  # silent, though: users on the lost platform are simply told no update is
+  # published for their computer. So it is checked rather than hoped for.
+  verify:
+    name: Verify updater manifest
+    needs: [resolve, build]
+    if: needs.resolve.outputs.publishing == 'true' && inputs.platforms == 'both'
+    runs-on: ubuntu-latest
+    permissions:
+      # Read-only work, but GitHub only lists draft releases to a token with
+      # push access — and a draft is exactly when checking before publishing is
+      # worth something.
+      contents: write
+    steps:
+      - name: Check latest.json lists both platforms
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # Not `gh release download`: that resolves a tag through an endpoint
+          # which does not return drafts, so it 404s on exactly the runs worth
+          # checking. Listing and filtering sees published and draft alike.
+          gh api "repos/$GH_REPO/releases?per_page=100" > releases.json
+          asset=$(jq -r --arg tag "$TAG" '
+            [.[] | select(.tag_name == $tag)][0].assets[]?
+            | select(.name == "latest.json") | .id
+          ' releases.json)
+
+          if [ -z "$asset" ]; then
+            echo "::error::no latest.json on $TAG — the signing key or createUpdaterArtifacts is not doing its job"
+            exit 1
+          fi
+
+          gh api "repos/$GH_REPO/releases/assets/$asset" \
+            -H "Accept: application/octet-stream" > latest.json
+
+          missing=()
+          for platform in darwin-aarch64 windows-x86_64; do
+            # Explicitly non-empty: in jq an empty string is truthy, so a
+            # bare `.url and .signature` would pass a manifest carrying both
+            # keys and neither value.
+            jq -e --arg p "$platform" '
+              (.platforms[$p].url // "") != "" and (.platforms[$p].signature // "") != ""
+            ' latest.json > /dev/null || missing+=("$platform")
+          done
+
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::latest.json is missing ${missing[*]} — re-run the build job for that platform"
+            exit 1
+          fi
+
+          echo "latest.json advertises $(jq -r .version latest.json) for both platforms" \
+            >> "$GITHUB_STEP_SUMMARY"

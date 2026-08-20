@@ -13,6 +13,7 @@ const DEFAULTS: Settings = {
   overlay_anchor: "bottom_centre",
   refine_enabled: false,
   refine_model_id: "qwen2.5-0.5b-instruct",
+  check_for_updates: false,
 };
 
 function createSettingsStore() {

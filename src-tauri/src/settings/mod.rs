@@ -30,6 +30,11 @@ pub const DEFAULT_HOTKEY: &str = crate::platform::default_hotkey();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+// Four independent checkboxes, not four states of one thing: a user can want
+// any combination of them, and the file is a flat mirror of the panel. Folding
+// them into an enum or a bitfield would make `settings.json` harder to read by
+// hand, which is the one debugging tool this file has.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Settings {
     pub hotkey: String,
     pub recording_mode: RecordingMode,
@@ -48,6 +53,11 @@ pub struct Settings {
     pub refine_enabled: bool,
     /// Which refinement model to use, when enabled.
     pub refine_model_id: String,
+    /// Ask GitHub once a day whether a newer version is published
+    /// (decision 0006). Off by default, and load-bearing that it is: this is
+    /// the only thing in the app that reaches the network without the user
+    /// pressing a button for it, so it does not happen until they say so.
+    pub check_for_updates: bool,
 }
 
 impl Default for Settings {
@@ -63,6 +73,7 @@ impl Default for Settings {
             overlay_anchor: OverlayAnchor::default(),
             refine_enabled: false,
             refine_model_id: DEFAULT_REFINE_MODEL_ID.to_string(),
+            check_for_updates: false,
         }
     }
 }

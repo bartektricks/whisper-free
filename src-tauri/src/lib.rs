@@ -40,6 +40,7 @@ pub mod settings;
 pub mod state;
 pub mod text_insertion;
 pub mod tray;
+pub mod update;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -101,12 +102,29 @@ pub struct AppContext {
     /// Whether Escape is currently claimed from the OS. Escape belongs to every
     /// other app the rest of the time, so add and remove must never double up.
     pub cancel_key_held: AtomicBool,
+    /// How far an update check or download has got. Its own channel, never
+    /// `AppState`: updating runs beside the dictation loop and must not be
+    /// able to fail one (decision 0006).
+    pub update: Mutex<update::UpdateStatus>,
+    /// Claimed for the life of a check or a download, so a second click is a
+    /// no-op rather than a second request.
+    pub update_busy: AtomicBool,
+    /// When a check was last *attempted*. In memory only: a launch check per
+    /// run is the intent, and persisting it would be one more file to keep
+    /// correct for no benefit.
+    pub last_update_check: Mutex<Option<Instant>>,
     /// Kept alive for the process lifetime so buffered log lines are flushed.
     _log_guard: Option<WorkerGuard>,
 }
 
 /// Emitted to the UI whenever the authoritative state changes.
 pub const EVENT_STATE_CHANGED: &str = "state_changed";
+
+/// Asks the settings window to bring a named section to the front.
+///
+/// The tray is the only sender: a menu-bar app has to be able to point at the
+/// panel it is talking about, and the window may not have existed a moment ago.
+pub const EVENT_SHOW_SECTION: &str = "show_section";
 
 /// Milliseconds as a `u64`, for log fields.
 ///
@@ -478,6 +496,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         finishing: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
         cancel_key_held: AtomicBool::new(false),
+        update: Mutex::new(update::UpdateStatus::default()),
+        update_busy: AtomicBool::new(false),
+        last_update_check: Mutex::new(None),
         _log_guard: log_guard,
     });
 
@@ -524,6 +545,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     load_installed_model(app.handle());
     sync_refiner(app.handle());
     watch_refiner_idle(app.handle());
+    // Makes no request until the user has switched checking on — see
+    // `update::watch`.
+    update::watch(app.handle());
 
     // A menu-bar app that shows nothing at all on first launch reads as a
     // failed install, so introduce ourselves once.
@@ -554,6 +578,9 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
+        // Only registered; nothing is checked until the user asks or switches
+        // automatic checks on. `update/` is the one module that drives it.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -597,6 +624,11 @@ pub fn run() {
             commands::can_insert_text,
             commands::request_insert_permission,
             commands::quit_app,
+            commands::get_update_status,
+            commands::check_for_updates,
+            commands::install_update,
+            commands::open_release_notes,
+            commands::restart_for_update,
         ])
         .on_window_event(|window, event| {
             // Closing the settings window must not quit a menu-bar app.

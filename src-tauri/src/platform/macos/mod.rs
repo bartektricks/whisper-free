@@ -40,6 +40,8 @@ pub mod strings {
 
     pub const LOGIN_ITEMS_SETTINGS: &str = "System Settings › General › Login Items";
 
+    pub const INSTALL_LOCATION: &str = "the Applications folder";
+
     pub const INPUT_PERMISSION_SETTINGS_URL: Option<&str> =
         Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
 

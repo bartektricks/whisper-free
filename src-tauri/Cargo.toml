@@ -1,6 +1,6 @@
 [package]
 name = "whisper-free"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fully local dictation"
 authors = ["Bartlomiej Ciszewski"]
 edition = "2021"
@@ -70,6 +70,11 @@ tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-os = "2.3.2"
 tauri-plugin-single-instance = "2.4.3"
+# In-app updates (decision 0006). Pinned like the rest: 2.10 is the first
+# version that reads the `{os}-{arch}-{installer}` keys `tauri-action` now
+# writes into latest.json, and an older plugin would silently find no
+# platform entry rather than fail.
+tauri-plugin-updater = "2.10.1"
 
 # The execution provider is a runtime setting (decision 0001), so CoreML stays
 # available on macOS even though the app asks for CPU. Elsewhere there is no
