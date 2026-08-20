@@ -11,6 +11,8 @@ const DEFAULTS: Settings = {
   start_at_login: false,
   show_overlay: true,
   overlay_anchor: "bottom_centre",
+  refine_enabled: false,
+  refine_model_id: "qwen2.5-0.5b-instruct",
 };
 
 function createSettingsStore() {

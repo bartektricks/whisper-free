@@ -22,6 +22,8 @@ cargo test                    # all unit tests (inline #[cfg(test)] modules)
 cargo test hold_to_talk       # one test or module by name substring
 cargo run --example mic_check 3                      # 3 s capture, prints duration/rate/peak
 cargo run --release --example pipeline_check a.wav   # installs model if missing, then model → ASR → dictionary
+cargo run --release --example refine_check            # installs the cleanup model, then measures it
+cargo tree -d | grep ort                              # must show one ort and one ort-sys, never two
 ```
 
 Releases are **manual only**: `.github/workflows/release.yml` has no push or tag
@@ -78,6 +80,11 @@ works. It runs `Stop` handling on a spawned `dictation` thread because inference
 paste-settle sleep would otherwise block the thread delivering hotkey events. Preconditions
 are checked against the real thing (`recognizer.is_some()`, `ctx.audio.is_recording()`)
 rather than against `AppState`, since state can be stale or `Error` after a failure.
+`refine_text` sits between the second cancel gate and the dictionary, and returns `String`
+rather than `Result` on purpose: **refinement is advisory**, so an absent model, a load
+error, a rejected rewrite or a cancelled run all resolve to the raw transcription. Order
+matters — the model runs first, the dictionary second, so a replacement the user wrote by
+hand is never second-guessed.
 
 **Overlay (`overlay.rs`)** is the floating indicator, a second window labelled
 `overlay` declared in `tauri.conf.json`. Rust decides *whether* it is on screen and
@@ -111,12 +118,18 @@ the stream for its whole life and everything else sends `Command`s over a channe
 waits for a reply. The audio contract is fixed at 16 kHz mono f32 in `[-1, 1]`; downmix
 and resampling happen on stop.
 
-**Two load-bearing boundaries** (keep them intact):
+**Three load-bearing boundaries** (keep them intact):
 
 - `asr/` — outside this module the app only knows `audio -> transcription` via the
   `SpeechRecognizer` trait. `asr/parakeet.rs` is the only file that may name
   `transcribe-rs`, ONNX, quantisation, or chunk sizes. A second engine means a new
   `EngineKind` variant and a new arm in `build_recognizer` (`lib.rs`), nothing else.
+- `refine/` — outside this module the app only knows `text -> text`, via the
+  `TextRefiner` trait. `refine/onnx.rs` is the only file that may name `ort`,
+  `tokenizers`, a KV cache, or a graph input name. `refine/guard.rs` and
+  `refine/prompt.rs` are pure and carry most of the tests. A second refinement
+  model is a new `EngineKind` arm in `build_refiner` (`lib.rs`) and possibly a
+  new `prompt::Template` variant. See `docs/decisions/0005-local-refinement-model.md`.
 - `platform/` — application code calls the free functions and `platform::strings` consts in
   `platform/mod.rs`, and nothing else. `mod backend` is private and selected by
   `#[cfg_attr(target_os, path)]`, so `platform::macos::*` is unnameable from outside and a
@@ -164,6 +177,13 @@ denied in it. `src/overlay/` must not import `app.css`: it paints `body` opaque.
   mode; see `docs/decisions/0001-parakeet-inference-runtime.md` before touching the
   constants in `asr/parakeet.rs`. That ADR also documents why the execution provider is
   CPU and not CoreML (2.9× slower, 4.5× the memory on this int8 graph).
+- **A refinement never costs the user their words.** `refine/guard.rs` judges every
+  proposal against the raw transcription and rejects anything that strays — the
+  thresholds are measured, not guessed, and `measured_corrections_and_rewrites_stay_separated`
+  is the test that keeps them honest. The guard bounds *how much* may change, never
+  whether the change is right; a wrong substitution scores the same as a right one, which
+  is why the stage is opt-in and the dictionary still runs after it. Never make
+  refinement able to fail a dictation.
 - Parakeet v3 detects language but cannot be pinned, hence two separate `Capability`
   values; `LanguageSelection::Fixed` is refused up front rather than silently ignored.
 - Closing the settings window hides it — a tray app must not quit on window close

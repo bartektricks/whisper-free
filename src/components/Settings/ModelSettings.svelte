@@ -10,6 +10,9 @@
   let errors = $state<Record<string, string>>({});
   let unlisteners: UnlistenFn[] = [];
 
+  const speech = $derived(models.filter((m) => m.kind === "speech"));
+  const refiners = $derived(models.filter((m) => m.kind === "refiner"));
+
   async function refresh() {
     models = await invoke<ModelInfo[]>("get_models");
   }
@@ -69,18 +72,21 @@
 <section>
   <h2>Models</h2>
   <p class="intro">
-    Speech models are downloaded on request, never automatically. Once installed,
-    transcription runs entirely on this Mac.
+    Models are downloaded on request, never automatically. Once installed, everything
+    runs entirely on this machine.
   </p>
 
-  {#each models as model (model.id)}
+  {#snippet card(model: ModelInfo)}
     {@const active = progress[model.id]}
     <article class="model">
       <div class="head">
         <div>
           <h3>{model.name}</h3>
           <p class="meta">
-            {summariseLanguages(model.languages)} · {formatBytes(model.size_bytes)}
+            {#if model.languages.length > 0}
+              {summariseLanguages(model.languages)} ·
+            {/if}
+            {formatBytes(model.size_bytes)}
           </p>
         </div>
 
@@ -121,6 +127,20 @@
         <p class="error" role="alert">{errors[model.id]}</p>
       {/if}
     </article>
+  {/snippet}
+
+  <h3 class="group">Speech</h3>
+  {#each speech as model (model.id)}
+    {@render card(model)}
+  {/each}
+
+  <h3 class="group">Cleanup</h3>
+  <p class="intro">
+    Optional. A small language model that checks a transcription over and fixes words the
+    speech model misheard. Switch it on in Settings › Cleanup once it is downloaded.
+  </p>
+  {#each refiners as model (model.id)}
+    {@render card(model)}
   {/each}
 </section>
 
@@ -132,6 +152,19 @@
 
   h3 {
     font-size: 13px;
+  }
+
+  /* The section headings, distinguished from a model's own name. */
+  h3.group {
+    color: var(--text-dim);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin: 22px 0 8px;
+  }
+
+  h3.group:first-of-type {
+    margin-top: 0;
   }
 
   .intro {

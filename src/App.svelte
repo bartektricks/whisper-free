@@ -8,6 +8,7 @@
   import SpeechSettings from "./components/Settings/SpeechSettings.svelte";
   import DictionarySettings from "./components/Settings/DictionarySettings.svelte";
   import ModelSettings from "./components/Settings/ModelSettings.svelte";
+  import CleanupSettings from "./components/Settings/CleanupSettings.svelte";
 
   const settingsError = settings.error;
 
@@ -15,6 +16,7 @@
     { id: "general", label: "General" },
     { id: "audio", label: "Audio" },
     { id: "speech", label: "Speech" },
+    { id: "cleanup", label: "Cleanup" },
     { id: "dictionary", label: "Dictionary" },
     { id: "models", label: "Models" },
   ] as const;
@@ -57,6 +59,8 @@
         <AudioSettings />
       {:else if active === "speech"}
         <SpeechSettings />
+      {:else if active === "cleanup"}
+        <CleanupSettings />
       {:else if active === "dictionary"}
         <DictionarySettings />
       {:else if active === "models"}

@@ -25,6 +25,7 @@ pub fn status_text(snapshot: &StateSnapshot) -> String {
         AppState::Ready => "Ready".to_string(),
         AppState::Recording => "Recording…".to_string(),
         AppState::Transcribing => "Transcribing…".to_string(),
+        AppState::Refining => "Checking the text…".to_string(),
         AppState::Inserting => "Inserting…".to_string(),
         AppState::Error => snapshot
             .message

@@ -35,6 +35,7 @@ pub mod logging;
 pub mod models;
 pub mod overlay;
 pub mod platform;
+pub mod refine;
 pub mod settings;
 pub mod state;
 pub mod text_insertion;
@@ -44,6 +45,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -65,6 +67,13 @@ pub struct AppContext {
     pub audio: audio::AudioEngine,
     /// The loaded speech model, absent until one is installed and loaded.
     pub recognizer: Mutex<Option<Box<dyn asr::SpeechRecognizer>>>,
+    /// The loaded refinement model. Absent whenever the feature is switched
+    /// off, which is the default — it is loaded on demand and dropped again
+    /// when the setting is turned off, because it is the second model resident
+    /// alongside the speech model's 1.4 GB.
+    pub refiner: Mutex<Option<Box<dyn refine::TextRefiner>>>,
+    /// When the refinement model was last used, for the idle unload below.
+    pub refiner_last_used: Mutex<Option<Instant>>,
     /// System-wide shortcut registration.
     pub hotkeys: Box<dyn hotkey::GlobalHotkeys>,
     /// The hotkey as parsed, plus the state of a chord waiting for its second
@@ -168,14 +177,187 @@ fn publish_state(app: &AppHandle, ctx: &AppContext, snapshot: &StateSnapshot) {
 fn build_recognizer(
     descriptor: &models::ModelDescriptor,
     model_dir: PathBuf,
-) -> Box<dyn asr::SpeechRecognizer> {
+) -> Option<Box<dyn asr::SpeechRecognizer>> {
     match descriptor.engine {
-        models::EngineKind::Parakeet => Box::new(asr::parakeet::ParakeetRecognizer::new(
+        models::EngineKind::Parakeet => Some(Box::new(asr::parakeet::ParakeetRecognizer::new(
             descriptor.id,
             model_dir,
             descriptor.languages(),
             descriptor.capabilities.to_vec(),
-        )),
+        ))),
+        // A refinement model cannot transcribe. Unreachable through Settings,
+        // which only offers `ModelKind::Speech` here, but returning nothing
+        // beats a hand-edited settings.json taking the app down.
+        models::EngineKind::RefinerOnnx => None,
+    }
+}
+
+/// Build a refiner for a model descriptor.
+///
+/// The mirror of [`build_recognizer`], and the one place an engine maps to a
+/// refinement implementation.
+fn build_refiner(
+    descriptor: &models::ModelDescriptor,
+    model_dir: PathBuf,
+) -> Option<Box<dyn refine::TextRefiner>> {
+    match descriptor.engine {
+        models::EngineKind::RefinerOnnx => Some(Box::new(refine::onnx::OnnxRefiner::new(
+            descriptor.id,
+            model_dir,
+            // Qwen2.5 is not a reasoning model: priming an empty think block
+            // derails it. See `refine::prompt::Template`.
+            refine::Template::ChatMl,
+        ))),
+        models::EngineKind::Parakeet => None,
+    }
+}
+
+/// How long the refinement model may sit unused before it is dropped.
+///
+/// It is half a gigabyte resident next to the speech model's 1.4 GB, and the
+/// cost of being wrong is one extra second on the next dictation — the trait
+/// reloads lazily inside `refine`. Ten minutes is long enough to cover a
+/// working session of intermittent dictation and short enough that a menu-bar
+/// app left open overnight is not holding the memory in the morning.
+pub const REFINER_IDLE_TIMEOUT: Duration = Duration::from_mins(10);
+
+/// How often the watchdog wakes to check.
+const REFINER_IDLE_POLL: Duration = Duration::from_mins(1);
+
+/// Should a model last used at `last_used` be dropped by now?
+///
+/// Pure, so the rule is testable without waiting ten minutes — the same split
+/// as [`crate::state::is_valid`] and [`crate::hotkey::decide`].
+#[must_use]
+pub fn should_unload_refiner(
+    last_used: Option<Instant>,
+    now: Instant,
+    timeout: Duration,
+) -> bool {
+    // Never used since it was loaded is not idle: the user switched the
+    // feature on and has not dictated yet, and unloading underneath them would
+    // make their first dictation the slow one.
+    last_used.is_some_and(|used| now.saturating_duration_since(used) >= timeout)
+}
+
+/// One tick of the idle watchdog.
+///
+/// Split out so the borrow of managed state ends with the call rather than
+/// spanning the loop.
+fn drop_refiner_if_idle(ctx: &AppContext) {
+    let last_used = match ctx.refiner_last_used.lock() {
+        Ok(guard) => *guard,
+        Err(_) => return,
+    };
+    if !should_unload_refiner(last_used, Instant::now(), REFINER_IDLE_TIMEOUT) {
+        return;
+    }
+
+    if let Ok(mut guard) = ctx.refiner.lock() {
+        if let Some(refiner) = guard.as_mut() {
+            refiner.unload();
+            // Loaded lazily again on the next dictation, so the model stays
+            // configured — only its memory goes.
+            tracing::info!(event = "refiner_idle_unloaded");
+        }
+    }
+    if let Ok(mut guard) = ctx.refiner_last_used.lock() {
+        *guard = None;
+    }
+}
+
+/// Drop the refinement model once it has gone unused for a while.
+///
+/// Started once, at setup. Cheap: it wakes a minute at a time, takes two locks,
+/// and in the overwhelmingly common case finds no model loaded at all.
+fn watch_refiner_idle(app: &AppHandle) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("refiner-idle".into())
+        .spawn(move || loop {
+            std::thread::sleep(REFINER_IDLE_POLL);
+
+            let Some(ctx) = app.try_state::<AppContext>() else {
+                return;
+            };
+            drop_refiner_if_idle(&ctx);
+        });
+
+    if let Err(e) = spawned {
+        tracing::error!(error = %e, "could not start the refiner idle thread");
+    }
+}
+
+/// Load or drop the refinement model to match the current settings.
+///
+/// Called at startup, after a download completes, and whenever the setting is
+/// toggled. Never touches app state: refinement is advisory, so a refiner that
+/// will not load is a feature that quietly does nothing, not an error banner
+/// over a dictation loop that still works.
+pub fn sync_refiner(app: &AppHandle) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("refiner-load".into())
+        .spawn(move || {
+            let Some(ctx) = app.try_state::<AppContext>() else {
+                return;
+            };
+
+            let (enabled, model_id) = match ctx.settings.lock() {
+                Ok(s) => (s.refine_enabled, s.refine_model_id.clone()),
+                Err(_) => return,
+            };
+
+            if !enabled {
+                if let Ok(mut guard) = ctx.refiner.lock() {
+                    if let Some(refiner) = guard.as_mut() {
+                        refiner.unload();
+                    }
+                    *guard = None;
+                }
+                return;
+            }
+
+            let Some(descriptor) = models::find(&model_id) else {
+                tracing::warn!(model_id = %model_id, "configured refiner is not in the registry");
+                return;
+            };
+
+            if !ctx.models.is_installed(descriptor) {
+                tracing::info!(event = "refiner_not_installed", model_id = %model_id);
+                return;
+            }
+
+            // Already loaded and unchanged: nothing to do.
+            if ctx
+                .refiner
+                .lock()
+                .is_ok_and(|g| g.as_ref().is_some_and(|r| r.model_id() == model_id.as_str()))
+            {
+                return;
+            }
+
+            let Some(mut refiner) = build_refiner(descriptor, ctx.models.dir_for(descriptor.id))
+            else {
+                tracing::warn!(model_id = %model_id, "configured refiner has no implementation");
+                return;
+            };
+
+            match refiner.load() {
+                Ok(()) => {
+                    if let Ok(mut guard) = ctx.refiner.lock() {
+                        *guard = Some(refiner);
+                    }
+                }
+                Err(e) => {
+                    // Logged, not surfaced: dictation still works without it.
+                    tracing::warn!(event = "refiner_load_failed", error = %e);
+                }
+            }
+        });
+
+    if let Err(e) = spawned {
+        tracing::error!(error = %e, "could not start the refiner loading thread");
     }
 }
 
@@ -205,7 +387,12 @@ pub fn load_installed_model(app: &AppHandle) {
                 return;
             }
 
-            let mut recognizer = build_recognizer(descriptor, ctx.models.dir_for(descriptor.id));
+            let Some(mut recognizer) =
+                build_recognizer(descriptor, ctx.models.dir_for(descriptor.id))
+            else {
+                tracing::warn!(model_id = %model_id, "configured model cannot transcribe");
+                return;
+            };
             match recognizer.load() {
                 Ok(()) => {
                     if let Ok(mut guard) = ctx.recognizer.lock() {
@@ -278,6 +465,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         tray: Mutex::new(Some(handles)),
         audio: audio::AudioEngine::spawn(),
         recognizer: Mutex::new(None),
+        refiner: Mutex::new(None),
+        refiner_last_used: Mutex::new(None),
         hotkeys: Box::new(hotkey::TauriGlobalHotkeys::new(app.handle().clone())),
         // A settings file edited by hand can hold anything, and a hotkey that
         // does not parse must not stop the app from starting.
@@ -333,6 +522,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // Loading takes about a second and ~1.4 GB, so it happens off the startup
     // path. The app stays Uninitialized until it succeeds.
     load_installed_model(app.handle());
+    sync_refiner(app.handle());
+    watch_refiner_idle(app.handle());
 
     // A menu-bar app that shows nothing at all on first launch reads as a
     // failed install, so introduce ourselves once.
@@ -430,5 +621,42 @@ pub fn run() {
             }
         }),
         Err(e) => tracing::error!(error = %e, "WhisperFree could not start"),
+    }
+}
+
+#[cfg(test)]
+mod refiner_idle_tests {
+    use super::{should_unload_refiner, REFINER_IDLE_TIMEOUT};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_model_used_recently_is_kept() {
+        let now = Instant::now();
+        let recent = now.checked_sub(Duration::from_mins(1)).unwrap_or(now);
+        assert!(!should_unload_refiner(Some(recent), now, REFINER_IDLE_TIMEOUT));
+    }
+
+    #[test]
+    fn a_model_left_idle_is_dropped() {
+        let now = Instant::now();
+        let stale = now
+            .checked_sub(REFINER_IDLE_TIMEOUT + Duration::from_secs(1))
+            .unwrap_or(now);
+        assert!(should_unload_refiner(Some(stale), now, REFINER_IDLE_TIMEOUT));
+    }
+
+    #[test]
+    fn a_model_that_has_never_been_used_is_kept() {
+        // The user has just switched the feature on and not dictated yet.
+        // Unloading here would make their first dictation the slow one, which
+        // is exactly the wrong impression to give of the feature.
+        assert!(!should_unload_refiner(None, Instant::now(), REFINER_IDLE_TIMEOUT));
+    }
+
+    #[test]
+    fn the_boundary_itself_unloads() {
+        let now = Instant::now();
+        let exactly = now.checked_sub(REFINER_IDLE_TIMEOUT).unwrap_or(now);
+        assert!(should_unload_refiner(Some(exactly), now, REFINER_IDLE_TIMEOUT));
     }
 }

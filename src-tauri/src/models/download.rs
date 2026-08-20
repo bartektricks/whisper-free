@@ -134,7 +134,7 @@ pub fn install(
             continue;
         }
 
-        let url = format!("{}/{}", descriptor.base_url, file.name);
+        let url = format!("{}/{}", descriptor.base_url, file.remote);
         download_one(
             &url,
             &target,

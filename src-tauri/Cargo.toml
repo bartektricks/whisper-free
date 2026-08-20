@@ -37,6 +37,31 @@ rubato = "5.0.0"
 ureq = "3.4.0"
 sha2 = "0.11.0"
 
+# The refinement model (decision 0005). `ort` is pinned to the exact version
+# `transcribe-rs` resolves to, so the tree links one ONNX Runtime and not two —
+# `cargo tree -d` is the check. Nothing new is bundled: the runtime is already
+# statically linked for the speech model.
+ort = { version = "=2.0.0-rc.12", features = ["half"] }
+
+# Only to build the empty initial KV cache: the export's cache tensors are
+# float16, and after the first step they are fed straight back from the previous
+# run's outputs without ever being read. Pure Rust, and already in the tree.
+half = "2"
+
+# Also only for the empty initial cache. `ort` refuses to build a tensor from a
+# raw slice with a zero-length dimension, which is exactly the shape an unseeded
+# KV cache has; the array path accepts it. Already in the tree via transcribe-rs.
+ndarray = "0.17"
+
+# Default features pull in Oniguruma (C) and esaxx (C++). Neither is needed to
+# *load* a tokeniser — esaxx only accelerates BPE training — and both would put
+# a C toolchain in a tree that decision 0001 kept free of one. `fancy-regex` is
+# the pure-Rust replacement for `onig`, and supports the lookahead the Qwen
+# split pattern uses.
+tokenizers = { version = "0.23", default-features = false, features = [
+    "fancy-regex",
+] }
+
 # Official plugins. Everything here is driven from Rust, so only the `os`
 # plugin — whose `platform()` is called from Svelte — needs a capability entry.
 tauri-plugin-global-shortcut = "2.3.2"
