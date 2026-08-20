@@ -51,7 +51,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       publishing: ${{ steps.plan.outputs.publishing }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: plan
         # Inputs go through the environment, never straight into the script: `tag` is
         # free text and would otherwise be an injection point.
@@ -119,7 +119,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
