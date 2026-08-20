@@ -59,7 +59,7 @@ impl DictionaryError {
 ///
 /// Unicode-aware, so Polish letters count as word characters and a rule for
 /// "kot" does not fire inside "kotłownia".
-fn is_word_char(c: char) -> bool {
+pub(crate) fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
@@ -168,6 +168,22 @@ impl Dictionary {
             return Err(DictionaryError::NotFound(id));
         }
         Ok(())
+    }
+
+    /// The correctly-spelled side of every enabled rule.
+    ///
+    /// Handed to the refinement model as the words this speaker uses, so a
+    /// name it has never seen is not "corrected" into something it has
+    /// (decision 0005). The `input` side is deliberately left out: those are
+    /// the misheard forms, and showing a model what a mistake looks like
+    /// invites it to produce one.
+    #[must_use]
+    pub fn replacement_terms(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|e| e.enabled && !e.replacement.trim().is_empty())
+            .map(|e| e.replacement.trim().to_owned())
+            .collect()
     }
 
     /// Apply every enabled entry to `text`.

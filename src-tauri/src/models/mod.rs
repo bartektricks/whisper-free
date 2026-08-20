@@ -15,7 +15,14 @@ use crate::asr::{Capability, Language};
 /// One file belonging to a model.
 #[derive(Debug, Clone, Copy)]
 pub struct ModelFile {
+    /// Name on disk, inside the model's own directory.
     pub name: &'static str,
+    /// Path under the descriptor's `base_url`.
+    ///
+    /// Usually the same as `name`, but not always: HuggingFace repositories
+    /// keep ONNX exports in an `onnx/` subdirectory while the tokeniser sits at
+    /// the root, and we flatten both into one directory locally.
+    pub remote: &'static str,
     /// Pinned digest — the trust anchor for the download.
     pub sha256: &'static str,
     pub size_bytes: u64,
@@ -27,6 +34,22 @@ pub struct ModelFile {
 #[serde(rename_all = "snake_case")]
 pub enum EngineKind {
     Parakeet,
+    /// A decoder-only language model behind `refine::onnx` (decision 0005).
+    RefinerOnnx,
+}
+
+/// What a model is for.
+///
+/// Speech models and refinement models share the whole download, verification
+/// and storage path — they differ only in which slot they are loaded into and
+/// which part of Settings lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelKind {
+    /// Turns audio into text.
+    Speech,
+    /// Checks over text the speech model produced.
+    Refiner,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -35,8 +58,9 @@ pub struct ModelDescriptor {
     pub name: &'static str,
     pub version: &'static str,
     pub description: &'static str,
+    pub kind: ModelKind,
     pub engine: EngineKind,
-    /// Where the files are fetched from, joined with each file name.
+    /// Where the files are fetched from, joined with each file's `remote`.
     pub base_url: &'static str,
     pub files: &'static [ModelFile],
     /// (code, English name) pairs.
@@ -101,37 +125,82 @@ const PARAKEET_V3_CAPABILITIES: &[Capability] = &[
 const PARAKEET_V3_FILES: &[ModelFile] = &[
     ModelFile {
         name: "encoder-model.int8.onnx",
+        remote: "encoder-model.int8.onnx",
         sha256: "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09",
         size_bytes: 652_183_999,
     },
     ModelFile {
         name: "decoder_joint-model.int8.onnx",
+        remote: "decoder_joint-model.int8.onnx",
         sha256: "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70",
         size_bytes: 18_202_004,
     },
     ModelFile {
         name: "nemo128.onnx",
+        remote: "nemo128.onnx",
         sha256: "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f",
         size_bytes: 139_764,
     },
     ModelFile {
         name: "vocab.txt",
+        remote: "vocab.txt",
         sha256: "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
         size_bytes: 93_939,
     },
 ];
+
+/// The refinement model (decision 0005).
+///
+/// Digests computed from the files the measurements in that decision were taken
+/// against, and cross-checked against the sizes HuggingFace reports.
+const QWEN25_05B_FILES: &[ModelFile] = &[
+    ModelFile {
+        name: "model_q4f16.onnx",
+        remote: "onnx/model_q4f16.onnx",
+        sha256: "b11c1dd99efd57e6c6e5bc4443a019931a5fbd5dd500d48644d8225f5ce0b2cb",
+        size_bytes: 483_003_582,
+    },
+    ModelFile {
+        name: "tokenizer.json",
+        remote: "tokenizer.json",
+        sha256: "a8506e7111b80c6d8635951a02eab0f4e1a8e4e5772da83846579e97b16f61bf",
+        size_bytes: 7_031_673,
+    },
+];
+
+/// A refiner declares no languages and no capabilities: it neither detects a
+/// language nor offers anything the Speech settings can be pointed at.
+const NO_LANGUAGES: &[(&str, &str)] = &[];
+const NO_CAPABILITIES: &[Capability] = &[];
 
 pub const AVAILABLE_MODELS: &[ModelDescriptor] = &[ModelDescriptor {
     id: "parakeet-tdt-0.6b-v3",
     name: "NVIDIA Parakeet TDT 0.6B v3",
     version: "3",
     description: "Fast and accurate, with automatic language detection and punctuation.",
+    kind: ModelKind::Speech,
     engine: EngineKind::Parakeet,
     base_url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main",
     files: PARAKEET_V3_FILES,
     languages: PARAKEET_V3_LANGUAGES,
     capabilities: PARAKEET_V3_CAPABILITIES,
+}, ModelDescriptor {
+    id: "qwen2.5-0.5b-instruct",
+    name: "Qwen2.5 0.5B Instruct",
+    version: "2.5",
+    description: "Checks transcriptions over and fixes misheard words. Adds about a second.",
+    kind: ModelKind::Refiner,
+    engine: EngineKind::RefinerOnnx,
+    base_url: "https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct/resolve/main",
+    files: QWEN25_05B_FILES,
+    languages: NO_LANGUAGES,
+    capabilities: NO_CAPABILITIES,
 }];
+
+/// Models of one kind, for the two places that list them separately.
+pub fn of_kind(kind: ModelKind) -> impl Iterator<Item = &'static ModelDescriptor> {
+    AVAILABLE_MODELS.iter().filter(move |m| m.kind == kind)
+}
 
 #[must_use]
 pub fn find(id: &str) -> Option<&'static ModelDescriptor> {
@@ -144,6 +213,9 @@ pub struct ModelInfo {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// What the model is for, so Settings can list speech and refinement
+    /// models under separate headings.
+    pub kind: ModelKind,
     pub size_bytes: u64,
     pub languages: Vec<Language>,
     pub installed: bool,
@@ -237,6 +309,7 @@ impl ModelStore {
     pub fn info(&self, descriptor: &ModelDescriptor) -> ModelInfo {
         ModelInfo {
             id: descriptor.id.to_string(),
+            kind: descriptor.kind,
             name: descriptor.name.to_string(),
             description: descriptor.description.to_string(),
             size_bytes: descriptor.total_bytes(),

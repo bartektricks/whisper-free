@@ -84,6 +84,12 @@ pub fn update_settings(
             || current.overlay_anchor != settings.overlay_anchor
     };
 
+    let refiner_changed = {
+        let current = ctx.settings.lock().map_err(lock_err)?;
+        current.refine_enabled != settings.refine_enabled
+            || current.refine_model_id != settings.refine_model_id
+    };
+
     let path = crate::settings::settings_path(&ctx.data_dir);
     settings.save(&path).map_err(|e| {
         tracing::error!(error = %e, "could not save settings");
@@ -102,6 +108,12 @@ pub fn update_settings(
     if overlay_changed {
         let snapshot = ctx.state.lock().map_err(lock_err)?.snapshot();
         crate::overlay::apply(&app, ctx.inner(), &snapshot);
+    }
+
+    // Loading is a second or so and unloading frees most of a gigabyte, so
+    // both directions happen off the command thread and only on a real change.
+    if refiner_changed {
+        crate::sync_refiner(&app);
     }
 
     tracing::info!(event = "settings_updated");
@@ -306,7 +318,9 @@ pub fn download_model(
                 Ok(()) => {
                     let _ = app_for_thread.emit("model_download_completed", descriptor.id);
                     // The model is on disk now, so the app can become usable.
+                    // Both are cheap no-ops for the kind that did not change.
                     crate::load_installed_model(&app_for_thread);
+                    crate::sync_refiner(&app_for_thread);
                 }
                 Err(e) => {
                     tracing::warn!(event = "model_download_failed", error = %e);

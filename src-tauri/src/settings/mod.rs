@@ -19,6 +19,10 @@ pub enum RecordingMode {
 /// The model shipped as the default choice. Not downloaded until the user asks.
 pub const DEFAULT_MODEL_ID: &str = "parakeet-tdt-0.6b-v3";
 
+/// The refinement model offered by default. Also not downloaded until asked —
+/// and unlike the speech model, not used until switched on either.
+pub const DEFAULT_REFINE_MODEL_ID: &str = "qwen2.5-0.5b-instruct";
+
 /// The hotkey a fresh install starts with, in the accelerator syntax Tauri
 /// understands. Chosen per platform, since a combination that is free on one
 /// system is reserved on another.
@@ -38,6 +42,12 @@ pub struct Settings {
     /// app that gives no sign it is recording reads as a broken hotkey.
     pub show_overlay: bool,
     pub overlay_anchor: OverlayAnchor,
+    /// Run transcriptions past a language model before pasting them
+    /// (decision 0005). Off by default: it costs about a second per dictation
+    /// and a second model in memory, and the loop works without it.
+    pub refine_enabled: bool,
+    /// Which refinement model to use, when enabled.
+    pub refine_model_id: String,
 }
 
 impl Default for Settings {
@@ -51,6 +61,8 @@ impl Default for Settings {
             start_at_login: false,
             show_overlay: true,
             overlay_anchor: OverlayAnchor::default(),
+            refine_enabled: false,
+            refine_model_id: DEFAULT_REFINE_MODEL_ID.to_string(),
         }
     }
 }

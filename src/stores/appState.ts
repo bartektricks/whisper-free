@@ -43,6 +43,8 @@ export function stateLabel(snapshot: StateSnapshot): string {
       return "Recording";
     case "transcribing":
       return "Transcribing";
+    case "refining":
+      return "Checking the text";
     case "inserting":
       return "Inserting";
     case "error":

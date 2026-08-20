@@ -8,7 +8,11 @@
 
   let models = $state<ModelInfo[]>([]);
 
-  const installed = $derived(models.filter((m) => m.installed));
+  // Speech models only: a cleanup model cannot transcribe, and offering it
+  // here would let a user pick one and break dictation.
+  const installed = $derived(
+    models.filter((m) => m.installed && m.kind === "speech"),
+  );
   const active = $derived(models.find((m) => m.id === $settings.model_id));
 
   onMount(async () => {

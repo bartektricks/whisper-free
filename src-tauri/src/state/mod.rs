@@ -19,6 +19,8 @@ pub enum AppState {
     Recording,
     /// Running inference on captured audio.
     Transcribing,
+    /// Checking the transcription over with a language model.
+    Refining,
     /// Placing text into the focused application.
     Inserting,
     /// Something failed; carries a user-facing message alongside.
@@ -32,6 +34,7 @@ impl fmt::Display for AppState {
             Self::Ready => "ready",
             Self::Recording => "recording",
             Self::Transcribing => "transcribing",
+            Self::Refining => "refining",
             Self::Inserting => "inserting",
             Self::Error => "error",
         };
@@ -48,11 +51,12 @@ pub struct InvalidTransition {
 
 /// Is `from -> to` a transition the dictation pipeline can actually make?
 ///
-/// The happy path is Ready -> Recording -> Transcribing -> Inserting -> Ready.
+/// The happy path is Ready -> Recording -> Transcribing -> Inserting -> Ready,
+/// with an optional Refining step between transcription and insertion.
 /// Every state may fail into `Error`, and any state may re-enter itself as a
 /// no-op so that repeated events are harmless.
 fn is_valid(from: AppState, to: AppState) -> bool {
-    use AppState::{Error, Inserting, Ready, Recording, Transcribing, Uninitialized};
+    use AppState::{Error, Inserting, Ready, Recording, Refining, Transcribing, Uninitialized};
 
     if from == to {
         return true; // idempotent: repeated events must not be errors
@@ -69,8 +73,15 @@ fn is_valid(from: AppState, to: AppState) -> bool {
         Ready => matches!(to, Recording | Uninitialized),
         // Ready covers a cancelled or empty recording.
         Recording => matches!(to, Transcribing | Ready),
-        // Ready covers a transcription that produced no text.
-        Transcribing => matches!(to, Inserting | Ready),
+        // Ready covers a transcription that produced no text. Inserting stays
+        // reachable directly: refinement is optional, and skipping it is the
+        // default rather than a special case.
+        Transcribing => matches!(to, Refining | Inserting | Ready),
+        // Ready covers a run cancelled while the model was still deciding.
+        // Refinement never fails the pipeline — a model that errors falls
+        // through to Inserting with the raw transcription — so there is no arm
+        // here for it beyond the universal one into Error.
+        Refining => matches!(to, Inserting | Ready),
         // Recording is reachable from Error because starting a new dictation is
         // how a user retries. Requiring a Ready hop first created a race: the
         // pipeline reports failures from a worker thread, so an error can land
@@ -183,6 +194,44 @@ mod tests {
     }
 
     #[test]
+    fn walks_the_happy_path_through_refinement() {
+        let mut sm = StateMachine::new();
+        for next in [Ready, Recording, Transcribing, Refining, Inserting, Ready] {
+            assert!(sm.transition_to(next).is_ok(), "should allow -> {next}");
+            assert_eq!(sm.state(), next);
+        }
+    }
+
+    #[test]
+    fn refinement_can_be_skipped_entirely() {
+        // The default, and the whole pipeline when the feature is switched off.
+        let mut sm = StateMachine::new();
+        sm.transition_to(Ready).unwrap();
+        sm.transition_to(Recording).unwrap();
+        sm.transition_to(Transcribing).unwrap();
+        assert!(sm.transition_to(Inserting).is_ok());
+    }
+
+    #[test]
+    fn escape_during_refinement_returns_to_ready_without_inserting() {
+        let mut sm = StateMachine::new();
+        sm.transition_to(Ready).unwrap();
+        sm.transition_to(Recording).unwrap();
+        sm.transition_to(Transcribing).unwrap();
+        sm.transition_to(Refining).unwrap();
+        assert!(sm.transition_to(Ready).is_ok());
+    }
+
+    #[test]
+    fn refinement_cannot_be_entered_from_outside_the_pipeline() {
+        let mut sm = StateMachine::new();
+        sm.transition_to(Ready).unwrap();
+        assert!(sm.transition_to(Refining).is_err());
+        sm.transition_to(Recording).unwrap();
+        assert!(sm.transition_to(Refining).is_err());
+    }
+
+    #[test]
     fn rejects_recording_before_a_model_is_loaded() {
         let mut sm = StateMachine::new();
         let err = sm.transition_to(Recording).unwrap_err();
@@ -232,10 +281,10 @@ mod tests {
 
     #[test]
     fn any_state_can_fail_and_carries_a_message() {
-        for start in [Uninitialized, Ready, Recording, Transcribing, Inserting] {
+        for start in [Uninitialized, Ready, Recording, Transcribing, Refining, Inserting] {
             let mut sm = StateMachine::new();
             // Drive to `start` along the happy path.
-            for next in [Ready, Recording, Transcribing, Inserting] {
+            for next in [Ready, Recording, Transcribing, Refining, Inserting] {
                 if sm.state() == start {
                     break;
                 }

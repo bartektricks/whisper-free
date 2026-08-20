@@ -4,6 +4,7 @@ export type AppState =
   | "ready"
   | "recording"
   | "transcribing"
+  | "refining"
   | "inserting"
   | "error";
 
@@ -42,6 +43,8 @@ export interface Settings {
   start_at_login: boolean;
   show_overlay: boolean;
   overlay_anchor: OverlayAnchor;
+  refine_enabled: boolean;
+  refine_model_id: string;
 }
 
 /** Mirrors `audio::AudioDevice`. */
@@ -66,10 +69,14 @@ export interface Language {
 }
 
 /** Mirrors `models::ModelInfo`. */
+/** Mirrors `models::ModelKind`. */
+export type ModelKind = "speech" | "refiner";
+
 export interface ModelInfo {
   id: string;
   name: string;
   description: string;
+  kind: ModelKind;
   size_bytes: number;
   languages: Language[];
   installed: boolean;

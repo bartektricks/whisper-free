@@ -110,6 +110,39 @@ The short version, measured on an M1 Pro:
 | Memory | ~1.4 GB while loaded |
 | Execution provider | **CPU** — CoreML measured 2.9× *slower* and used 4.5× the memory |
 
+## Cleaning up transcriptions
+
+Parakeet returns clean audio verbatim, but it mishears names and jargon —
+"cuber netties" for "Kubernetes". Switching on **Settings › Cleanup** runs each
+transcription past [Qwen2.5 0.5B Instruct](https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct)
+(483 MB, downloaded on request like the speech model) before it is pasted.
+
+It is **off by default**, because it costs about a second per dictation and half a
+gigabyte of memory on top of the speech model. With it off, nothing about the
+pipeline changes.
+
+**A cleanup is only ever a suggestion.** The model's output is checked against what
+you actually said, and thrown away if it strays — measured on the corpus in
+[decision 0005](docs/decisions/0005-local-refinement-model.md), real corrections
+move 0–11 % of the text while paraphrases, answers and translations move 19 % or
+more. Anything past 18 % is refused and the raw transcription is pasted. Your
+dictionary is applied afterwards either way, so a replacement you wrote by hand is
+never second-guessed.
+
+Measured on an M1 Pro, over 11 transcriptions:
+
+| | |
+|---|---|
+| Added latency | ~1.1 s (0.57 s reading the prompt, 0.53 s writing the correction) |
+| Memory | ~0.5 GB while loaded, on top of Parakeet's 1.4 GB |
+| Cases handled correctly | 9 of 11 |
+
+**It is much weaker in Polish than in English.** Asked to correct Polish, this model
+tends to translate it instead — the guard catches that and falls back, so Polish
+dictation is no worse than with the feature off, but it is not much better either.
+The two remaining English failures are the model ignoring a dictionary term it was
+given, and leaving one typo alone. It does not fix everything.
+
 ## Permissions
 
 **macOS** asks for two:
@@ -133,7 +166,8 @@ src/                     Svelte + TypeScript UI (settings only; small on purpose
   components/Settings/   one component per settings section
   stores/                state mirrored from the backend
 src-tauri/src/
-  asr/                   SpeechRecognizer trait — the model boundary
+  asr/                   SpeechRecognizer trait — the speech model boundary
+  refine/                TextRefiner trait — the cleanup model boundary
   audio/                 microphone capture, downmix, resampling
   state/                 the authoritative application state machine
   overlay.rs             the floating indicator: whether it shows, and where
@@ -148,6 +182,10 @@ Two boundaries are load-bearing and worth preserving:
 
 - **`asr/`** — the rest of the app only knows `audio -> transcription`. Swapping
   in Whisper or another model should touch one file.
+- **`refine/`** — the rest of the app only knows `text -> text`. `refine/onnx.rs`
+  is the only file that may name an ONNX session, a tokeniser or a KV cache, and
+  `refine/guard.rs` is pure, so the rule that decides whether a correction is safe
+  to paste is testable without a model.
 - **`platform/`** — no OS API is called from application logic. The backend
   module is private, so a platform directory cannot be reached around; adding
   Linux means adding one directory and one `cfg_attr` line.
@@ -161,7 +199,7 @@ depends on, on both platforms and without a line of OS-specific code. See
 ## Status
 
 The full dictation loop is implemented: hotkey → record → transcribe →
-dictionary → paste.
+[clean up] → dictionary → paste.
 
 Working today:
 
@@ -178,6 +216,9 @@ Working today:
 - Model download with progress, SHA-256 verification, and removal
 - Local transcription with automatic language detection and punctuation
 - Word-boundary-aware dictionary replacements
+- Optional local cleanup: a second, small language model checks each transcription
+  over and fixes words the speech model misheard. Off by default, and every
+  correction it proposes has to get past a guard before it is used
 - Clipboard-based insertion into the focused app, with the clipboard restored
 - Start at login
 
@@ -200,9 +241,10 @@ monochrome template image.
 
 ```sh
 cd src-tauri
-cargo test                                          # 99 unit tests
+cargo test                                          # 219 unit tests
 cargo run --example mic_check 3                     # capture path
 cargo run --release --example pipeline_check a.wav  # model + ASR + dictionary
+cargo run --release --example refine_check          # cleanup model, measured
 ```
 
 `pipeline_check` installs the model if it is missing, so it doubles as a way to

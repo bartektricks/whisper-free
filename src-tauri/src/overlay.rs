@@ -121,7 +121,11 @@ const fn wants_overlay(state: AppState, enabled: bool) -> bool {
     enabled
         && matches!(
             state,
-            AppState::Recording | AppState::Transcribing | AppState::Inserting | AppState::Error
+            AppState::Recording
+                | AppState::Transcribing
+                | AppState::Refining
+                | AppState::Inserting
+                | AppState::Error
         )
 }
 

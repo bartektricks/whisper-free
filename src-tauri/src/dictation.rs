@@ -10,6 +10,7 @@ use tauri::{AppHandle, Manager};
 use crate::asr::{AsrError, TranscriptionOptions};
 use crate::hotkey::chord::{classify, ChordStep};
 use crate::hotkey::{decide, HotkeyAction, HotkeyEvent, Shortcut, CHORD_TIMEOUT};
+use crate::refine;
 use crate::state::AppState;
 use crate::text_insertion::ClipboardOutcome;
 use crate::{fail_app_state, set_app_state, AppContext};
@@ -370,6 +371,16 @@ fn release_cancel_key(ctx: &AppContext) {
 fn cancel(app: &AppHandle, ctx: &AppContext) {
     ctx.cancelled.store(true, Ordering::Release);
 
+    // Refinement is the one interruptible stage, so tell it directly rather
+    // than making the user wait out a generation they have already abandoned.
+    // Cheap and harmless when nothing is running: the flag is reset at the
+    // start of every `refine`.
+    if let Ok(guard) = ctx.refiner.lock() {
+        if let Some(refiner) = guard.as_ref() {
+            refiner.cancel();
+        }
+    }
+
     if !claim_finish(&ctx.finishing) {
         tracing::info!(event = "dictation_cancelled", stage = "pipeline");
         return;
@@ -540,19 +551,39 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
         return;
     }
 
-    // Deterministic user replacements, applied before the text is delivered.
     let raw_text = transcription.text;
+
+    // A language model's opinion of what was said, if the user asked for one.
+    // Advisory: anything that goes wrong in here returns the raw text.
+    let checked = refine_text(app, ctx, &raw_text);
+
+    // Escape may have landed while the model was deciding. Unlike the speech
+    // model, this one is interruptible, so the flag is also checked between
+    // tokens; this catches the case where it arrived just after the last one.
+    if is_cancelled(ctx) {
+        tracing::info!(event = "dictation_cancelled", stage = "after_refine");
+        set_app_state(app, AppState::Ready);
+        return;
+    }
+
+    // Deterministic user replacements, applied last so a rule the user wrote
+    // by hand is never second-guessed by a model.
     let final_text = ctx.dictionary.lock().map_or_else(
         |_| {
-            tracing::error!("dictionary lock poisoned; inserting the raw transcription");
-            raw_text.clone()
+            tracing::error!("dictionary lock poisoned; inserting the unreplaced transcription");
+            checked.clone()
         },
-        |dictionary| dictionary.apply(&raw_text),
+        |dictionary| dictionary.apply(&checked),
     );
 
+    insert(app, ctx, &final_text);
+}
+
+/// The last step: text into whoever has focus, and back to Ready.
+fn insert(app: &AppHandle, ctx: &AppContext, final_text: &str) {
     set_app_state(app, AppState::Inserting);
 
-    match ctx.inserter.insert(&final_text) {
+    match ctx.inserter.insert(final_text) {
         Ok(outcome) => {
             tracing::info!(
                 event = "text_inserted",
@@ -573,6 +604,83 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
         Err(e) => {
             tracing::warn!(event = "text_insertion_failed", error = %e);
             fail_app_state(app, e.user_message());
+        }
+    }
+}
+
+/// Run the transcription past the refinement model, if one is switched on and
+/// loaded.
+///
+/// Returns text to insert either way, and never fails the dictation: an absent
+/// model, a load error, a rejected rewrite and a cancelled run all resolve to
+/// the raw transcription. Losing a correction disappoints; losing the user's
+/// words is a bug (decision 0005).
+fn refine_text(app: &AppHandle, ctx: &AppContext, raw: &str) -> String {
+    let enabled = ctx
+        .settings
+        .lock()
+        .is_ok_and(|settings| settings.refine_enabled);
+    if !enabled {
+        return raw.to_owned();
+    }
+
+    // The user's own words, so the model does not "correct" a term it has
+    // simply never seen. Their spellings, not the misheard forms.
+    let vocabulary = ctx.dictionary.lock().map_or_else(
+        |_| Vec::new(),
+        |dictionary| dictionary.replacement_terms(),
+    );
+
+    let Ok(mut guard) = ctx.refiner.lock() else {
+        tracing::warn!(event = "refinement_skipped", reason = "lock_poisoned");
+        return raw.to_owned();
+    };
+    let Some(refiner) = guard.as_mut() else {
+        tracing::info!(event = "refinement_skipped", reason = "not_loaded");
+        return raw.to_owned();
+    };
+
+    set_app_state(app, AppState::Refining);
+
+    // Keeps the idle watchdog in `lib.rs` from unloading a model in active use.
+    if let Ok(mut last_used) = ctx.refiner_last_used.lock() {
+        *last_used = Some(std::time::Instant::now());
+    }
+
+    let options = refine::RefineOptions { vocabulary };
+    let refinement = match refiner.refine(raw, &options) {
+        Ok(refinement) => refinement,
+        Err(e) => {
+            tracing::warn!(event = "refinement_failed", error = %e);
+            return raw.to_owned();
+        }
+    };
+
+    // Shapes only — never the transcription, the candidate, or the vocabulary.
+    tracing::info!(
+        event = "refinement_completed",
+        prompt_tokens = refinement.prompt_tokens,
+        generated_tokens = refinement.generated_tokens,
+        prefill_ms = crate::millis(refinement.prefill),
+        total_ms = crate::millis(refinement.duration)
+    );
+
+    match refine::guard::judge(raw, &refinement.text, &refine::Limits::default()) {
+        refine::Verdict::Accept(text) => {
+            tracing::info!(
+                event = "refinement_accepted",
+                before_chars = raw.chars().count(),
+                after_chars = text.chars().count()
+            );
+            text
+        }
+        refine::Verdict::Unchanged => {
+            tracing::info!(event = "refinement_unchanged");
+            raw.to_owned()
+        }
+        refine::Verdict::Reject(reason) => {
+            tracing::info!(event = "refinement_rejected", reason = reason.as_str());
+            raw.to_owned()
         }
     }
 }
