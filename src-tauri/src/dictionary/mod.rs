@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn saves_and_loads_round_trip() {
-        let dir = std::env::temp_dir().join("localdictation-dict-test");
+        let dir = std::env::temp_dir().join("whisperfree-dict-test");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dictionary_path(&dir);
 
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn a_corrupt_file_starts_empty_instead_of_failing() {
-        let dir = std::env::temp_dir().join("localdictation-dict-corrupt");
+        let dir = std::env::temp_dir().join("whisperfree-dict-corrupt");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dictionary_path(&dir);

@@ -491,7 +491,7 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
         let Ok(mut guard) = ctx.recognizer.lock() else {
             fail_app_state(
                 app,
-                "The speech engine hit an internal error. Restart LocalDictation.",
+                "The speech engine hit an internal error. Restart WhisperFree.",
             );
             return;
         };

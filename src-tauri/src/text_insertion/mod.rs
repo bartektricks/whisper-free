@@ -90,7 +90,7 @@ mod tests {
         let msg = InsertError::PermissionDenied.user_message();
         // The wording differs per platform, but it must always name a concrete
         // next step rather than just reporting the refusal.
-        assert!(msg.contains("LocalDictation"));
+        assert!(msg.contains("WhisperFree"));
         assert!(
             msg.contains("System Settings") || msg.contains(crate::platform::strings::PASTE_SHORTCUT),
             "no actionable next step: {msg}"

@@ -47,7 +47,7 @@ pub mod strings {
     /// synthetic input is a more privileged window, and by the time that is
     /// discovered the text is already on the clipboard — so the message says
     /// so rather than naming a settings page that does not exist.
-    pub const INSERT_PERMISSION_DENIED: &str = "Windows would not let LocalDictation paste into that window, which usually means the app is running as administrator. The text is on your clipboard — press Ctrl+V to paste it.";
+    pub const INSERT_PERMISSION_DENIED: &str = "Windows would not let WhisperFree paste into that window, which usually means the app is running as administrator. The text is on your clipboard — press Ctrl+V to paste it.";
 }
 
 /// Nothing to do: the app has no window visible at startup, so it never claims

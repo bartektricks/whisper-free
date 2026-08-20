@@ -1,4 +1,4 @@
-//! LocalDictation — fully local dictation.
+//! WhisperFree — fully local dictation.
 //!
 //! Architecture (plan §4): the UI is a thin Svelte layer that renders state and
 //! sends commands. Rust owns the state machine, audio, the ASR engine, and text
@@ -57,8 +57,8 @@ pub struct AppContext {
     pub state: Mutex<StateMachine>,
     pub settings: Mutex<Settings>,
     /// The app data directory Tauri resolves for this platform, e.g.
-    /// `~/Library/Application Support/com.bartek.localdictation` on macOS and
-    /// `%APPDATA%\com.bartek.localdictation` on Windows.
+    /// `~/Library/Application Support/com.bartek.whisperfree` on macOS and
+    /// `%APPDATA%\com.bartek.whisperfree` on Windows.
     pub data_dir: PathBuf,
     pub tray: Mutex<Option<TrayHandles>>,
     /// Owns the microphone on its own thread.
@@ -429,6 +429,6 @@ pub fn run() {
                 platform::settle_launch_activation();
             }
         }),
-        Err(e) => tracing::error!(error = %e, "LocalDictation could not start"),
+        Err(e) => tracing::error!(error = %e, "WhisperFree could not start"),
     }
 }

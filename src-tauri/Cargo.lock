@@ -2496,36 +2496,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
-name = "local-dictation"
-version = "0.1.0"
-dependencies = [
- "core-foundation",
- "core-graphics",
- "cpal",
- "objc2",
- "objc2-app-kit",
- "rubato",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-opener",
- "tauri-plugin-os",
- "tauri-plugin-single-instance",
- "thiserror 2.0.20",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "transcribe-rs",
- "ureq",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5768,6 +5738,36 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "whisper-free"
+version = "0.1.0"
+dependencies = [
+ "core-foundation",
+ "core-graphics",
+ "cpal",
+ "objc2",
+ "objc2-app-kit",
+ "rubato",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-opener",
+ "tauri-plugin-os",
+ "tauri-plugin-single-instance",
+ "thiserror 2.0.20",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "transcribe-rs",
+ "ureq",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "winapi"

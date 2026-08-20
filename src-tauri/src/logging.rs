@@ -20,11 +20,11 @@ pub fn init(log_dir: &Path) -> Option<WorkerGuard> {
         return None;
     }
 
-    let file_appender = tracing_appender::rolling::daily(log_dir, "local-dictation.log");
+    let file_appender = tracing_appender::rolling::daily(log_dir, "whisper-free.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-    let filter = EnvFilter::try_from_env("LOCAL_DICTATION_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("local_dictation_lib=info,warn"));
+    let filter = EnvFilter::try_from_env("WHISPER_FREE_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("whisper_free_lib=info,warn"));
 
     let file_layer = fmt::layer()
         .with_writer(non_blocking)

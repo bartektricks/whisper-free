@@ -18,7 +18,7 @@ mod backend;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 compile_error!(
-    "LocalDictation supports macOS and Windows. Adding a platform means adding \
+    "WhisperFree supports macOS and Windows. Adding a platform means adding \
      src/platform/<os>/ supplying the backend contract, and one cfg_attr line in \
      src/platform/mod.rs — see docs/decisions/0002-cross-platform-platform-layer.md"
 );

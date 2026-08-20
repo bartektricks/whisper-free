@@ -6,7 +6,7 @@
 
 Until now the app gave no sign it was working. The tray status line needs the menu
 open and the status badge needs the settings window open, so in the case the app is
-actually built for — hotkey pressed while typing in something else — LocalDictation
+actually built for — hotkey pressed while typing in something else — WhisperFree
 was invisible. You could not tell recording had started, that the hotkey had been
 swallowed by another app, or that transcription had failed.
 

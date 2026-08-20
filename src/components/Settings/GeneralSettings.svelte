@@ -255,7 +255,7 @@
 
   <Row
     label="Startup"
-    hint="Launches LocalDictation into the {trayName()} when you log in."
+    hint="Launches WhisperFree into the {trayName()} when you log in."
   >
     <label class="checkbox">
       <input

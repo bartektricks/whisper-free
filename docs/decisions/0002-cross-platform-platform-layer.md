@@ -4,7 +4,7 @@
 **Date:** 2026-08-13
 **Applies to:** plan §22, §23.6; supersedes nothing
 
-LocalDictation shipped macOS-only, but with `platform/` carved out in advance and a
+WhisperFree shipped macOS-only, but with `platform/` carved out in advance and a
 `compile_error!` where the second backend would go. This decision records what that
 seam became when a real Windows backend was put behind it, and what the deferred
 Linux backend will have to supply.

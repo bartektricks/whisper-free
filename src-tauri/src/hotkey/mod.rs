@@ -35,7 +35,7 @@ impl HotkeyError {
     pub fn user_message(&self) -> String {
         match self {
             Self::Invalid(accel) => {
-                format!("\"{accel}\" isn't a shortcut LocalDictation understands. Try one with a modifier, like Option+Space.")
+                format!("\"{accel}\" isn't a shortcut WhisperFree understands. Try one with a modifier, like Option+Space.")
             }
             Self::AlreadyTaken(accel) => {
                 format!("{accel} is already taken by another app. Pick a different shortcut in Settings › General.")

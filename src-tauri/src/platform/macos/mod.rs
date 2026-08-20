@@ -43,7 +43,7 @@ pub mod strings {
     pub const INPUT_PERMISSION_SETTINGS_URL: Option<&str> =
         Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
 
-    pub const INSERT_PERMISSION_DENIED: &str = "LocalDictation needs Accessibility permission to paste text. Grant it in System Settings › Privacy & Security › Accessibility, then try again.";
+    pub const INSERT_PERMISSION_DENIED: &str = "WhisperFree needs Accessibility permission to paste text. Grant it in System Settings › Privacy & Security › Accessibility, then try again.";
 }
 
 /// Switch the process to `NSApplicationActivationPolicyAccessory`.

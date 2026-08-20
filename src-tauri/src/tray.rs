@@ -49,7 +49,7 @@ pub fn build(app: &App) -> tauri::Result<TrayHandles> {
     let quit = MenuItem::with_id(
         app,
         "quit",
-        "Quit LocalDictation",
+        "Quit WhisperFree",
         true,
         accelerators.quit,
     )?;

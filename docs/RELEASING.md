@@ -17,7 +17,7 @@ back to the crate version. `package.json` carries the same number for tidiness �
 1. Make sure the commit you are releasing is green on `ci.yml`. The release workflow does
    not re-run clippy or the tests.
 2. Bump the version in `src-tauri/Cargo.toml` and `package.json`.
-3. `cd src-tauri && cargo check` — this updates the `local-dictation` entry in
+3. `cd src-tauri && cargo check` — this updates the `whisper-free` entry in
    `Cargo.lock`. Commit and push all three files.
 4. **Actions › Release › Run workflow**, pick the branch, and choose:
 
@@ -32,8 +32,8 @@ The tag does not need to exist beforehand — GitHub creates it at the commit yo
 from. The run's summary page states the plan (tag, commit, release type, platforms) before
 either build starts.
 
-Output: `LocalDictation_<version>_aarch64.dmg`, `LocalDictation.app.tar.gz`, and
-`LocalDictation_<version>_x64-setup.exe`, with install instructions in the release body and
+Output: `WhisperFree_<version>_aarch64.dmg`, `WhisperFree.app.tar.gz`, and
+`WhisperFree_<version>_x64-setup.exe`, with install instructions in the release body and
 GitHub's generated commit notes underneath.
 
 Budget **20–30 minutes per platform**. Release builds are cold every time: `lto = true`
