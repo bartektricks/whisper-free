@@ -44,6 +44,28 @@ build it is already running. There is no recovery except telling people to reins
 The `resolve` job refuses to publish without the secret, in seconds, rather than after two
 half-hour builds that would produce bundles nothing can install.
 
+### Building locally
+
+`createUpdaterArtifacts` is on, so `bun run tauri build` wants the private key too and
+stops with *"A public key has been found, but no private key"* without it. It comes from
+`.env`, which is gitignored:
+
+```sh
+TAURI_SIGNING_PRIVATE_KEY=…              # contents of ~/.tauri/whisper-free.key, not its path
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD=…
+```
+
+`tauri signer generate` already writes that file as a single base64 line, so it goes in
+unquoted and needs no re-encoding.
+
+The `tauri` script is `dotenv -- tauri` because the variable has to be in the *real* process
+environment before the CLI starts. The CLI is a native addon that runs inside bun and reads
+its environment through Rust's `std::env::var`; bun's own handling of `.env` — the automatic
+load and `--env-file` alike — populates only the JS `process.env`, which that addon cannot
+see. `dotenv-cli` exports and then spawns, so the value survives; the `dotenv` *library*,
+which assigns to `process.env` and nothing more, would not. A missing `.env` is a no-op, so
+the script behaves exactly as before for anyone without a key.
+
 ## Cutting a release
 
 1. Make sure the commit you are releasing is green on `ci.yml`. The release workflow does

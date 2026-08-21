@@ -35,7 +35,9 @@ falls back to the crate version; `package.json` mirrors it and the run fails if 
 or the chosen tag, disagree. Publishing also needs `TAURI_SIGNING_PRIVATE_KEY` — the
 update key, unrelated to Apple or Authenticode signing, and **unrecoverable if lost**: no
 later build could produce a signature the installed copies accept. The `resolve` job
-refuses to start without it. See `docs/RELEASING.md`.
+refuses to start without it. A local `bun run tauri build` needs the same key: the `tauri`
+script is `dotenv -- tauri`, so it comes from a gitignored `.env`. See
+`docs/RELEASING.md`.
 
 There is no root `Cargo.toml`; cargo commands run from `src-tauri/`. The examples are
 deliberately outside `cargo test` — they need a microphone, ~671 MB on disk, and network
