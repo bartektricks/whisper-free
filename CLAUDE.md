@@ -32,7 +32,10 @@ draft / artifacts-only, and which platforms to build. It produces an unsigned Ap
 Silicon `.dmg` and a Windows NSIS `-setup.exe`. **The app version lives only in
 `src-tauri/Cargo.toml`** — `tauri.conf.json` has no `version` key on purpose, so Tauri
 falls back to the crate version; `package.json` mirrors it and the run fails if the two,
-or the chosen tag, disagree. See `docs/RELEASING.md`.
+or the chosen tag, disagree. Publishing also needs `TAURI_SIGNING_PRIVATE_KEY` — the
+update key, unrelated to Apple or Authenticode signing, and **unrecoverable if lost**: no
+later build could produce a signature the installed copies accept. The `resolve` job
+refuses to start without it. See `docs/RELEASING.md`.
 
 There is no root `Cargo.toml`; cargo commands run from `src-tauri/`. The examples are
 deliberately outside `cargo test` — they need a microphone, ~671 MB on disk, and network
@@ -86,6 +89,21 @@ error, a rejected rewrite or a cancelled run all resolve to the raw transcriptio
 matters — the model runs first, the dictionary second, so a replacement the user wrote by
 hand is never second-guessed.
 
+**Updates (`update/`)** are advisory in the same sense refinement is: the module never
+touches `AppState`, so a failed check is a line in Settings › Updates rather than an error
+banner over an app that still transcribes. Status travels on its own `update_status_changed`
+event and its own `AppContext` field. Two rules are load-bearing. **Nothing here may run on
+the main thread** — when the app cannot be overwritten in place, the plugin's macOS path
+raises an admin prompt through `run_on_main_thread` and blocks on the reply, so calling it
+from the tray menu handler (which *is* the main thread on macOS) deadlocks exactly the way
+registering a shortcut from the hotkey handler does; both public verbs return immediately
+and work on the async runtime. And **the app never restarts itself**: a finished download
+waits at `ReadyToRestart`, and `install` refuses outright while `ctx.audio.is_recording()`
+or the state machine is mid-pipeline — checked against the real thing, not `AppState`. The
+updater endpoint is `releases/latest/download/latest.json`, which GitHub resolves to
+neither a prerelease nor a draft, so choosing `release` in the workflow is the act that
+ships to users. See `docs/decisions/0006-in-app-updates.md`.
+
 **Overlay (`overlay.rs`)** is the floating indicator, a second window labelled
 `overlay` declared in `tauri.conf.json`. Rust decides *whether* it is on screen and
 *where*; the webview (`src/overlay/`, its own Vite entry) decides what it looks like,
@@ -118,7 +136,7 @@ the stream for its whole life and everything else sends `Command`s over a channe
 waits for a reply. The audio contract is fixed at 16 kHz mono f32 in `[-1, 1]`; downmix
 and resampling happen on stop.
 
-**Three load-bearing boundaries** (keep them intact):
+**Four load-bearing boundaries** (keep them intact):
 
 - `asr/` — outside this module the app only knows `audio -> transcription` via the
   `SpeechRecognizer` trait. `asr/parakeet.rs` is the only file that may name
@@ -130,6 +148,12 @@ and resampling happen on stop.
   `refine/prompt.rs` are pure and carry most of the tests. A second refinement
   model is a new `EngineKind` arm in `build_refiner` (`lib.rs`) and possibly a
   new `prompt::Template` variant. See `docs/decisions/0005-local-refinement-model.md`.
+- `update/` — outside this module the app knows a status and three verbs (`check`,
+  `install`, `restart`); `update/plugin.rs` is the only file that may name
+  `tauri_plugin_updater`, a manifest, a signature or an archive. `update/schedule.rs` is
+  pure and carries its own tests. The JS half of the plugin is deliberately **not**
+  installed and the settings window holds no `updater` capability: the tray must be able
+  to start a check with no window open, and a download must survive the window closing.
 - `platform/` — application code calls the free functions and `platform::strings` consts in
   `platform/mod.rs`, and nothing else. `mod backend` is private and selected by
   `#[cfg_attr(target_os, path)]`, so `platform::macos::*` is unnameable from outside and a
@@ -153,7 +177,10 @@ still holding or a held Alt turns Ctrl+V into Ctrl+Alt+V.
 `LanguageSelection` is tag/content). Change a Rust type that crosses IPC and change the TS
 type in the same edit. `src/lib/platform.ts` mirrors `platform::strings` the same way, by
 hand, and gets the platform from `@tauri-apps/plugin-os` rather than a custom command. `stores/appState.ts` is a `readable` fed by `get_recording_state` +
-the `state_changed` event; `stores/settings.ts` writes optimistically and then replaces
+the `state_changed` event, and `stores/update.ts` is the same shape over
+`get_update_status` + `update_status_changed` — it has to be a store rather than component
+state, because `App.svelte` renders one section at a time with no keepalive and switching
+away mid-download would otherwise destroy the progress; `stores/settings.ts` writes optimistically and then replaces
 state with whatever `update_settings` returns, since the backend may reject or normalise.
 There are two entry points, `index.html` and `overlay.html`, listed in
 `vite.config.ts` — a new window means a new entry there, a `label` in
@@ -165,7 +192,11 @@ denied in it. `src/overlay/` must not import `app.css`: it paints `body` opaque.
 - **Privacy is architectural.** Audio stays in memory and never touches disk. Never log or
   persist audio samples, transcription text, clipboard contents, or dictionary entries —
   log shapes only (durations, sample counts, char counts, event names). No telemetry, and
-  no network call other than an explicitly requested model download.
+  no network call other than an explicitly requested model download **or an update check
+  the user has switched on** — `settings.check_for_updates` is off by default and
+  `update::watch` re-reads it every tick, so nothing reaches the network until someone
+  presses the button or ticks the box. See `docs/decisions/0006-in-app-updates.md`, which
+  is what amended this sentence.
 - **Errors that reach the UI are written for a person.** Each error enum has a
   `user_message()` returning plain language that names where to fix the problem; raw detail
   goes to `tracing`. Existing tests assert those messages leak no internals (`ort::`,

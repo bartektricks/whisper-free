@@ -13,6 +13,7 @@ use crate::models::download::CancelFlag;
 use crate::models::{ModelError, ModelInfo};
 use crate::settings::Settings;
 use crate::state::StateSnapshot;
+use crate::update::UpdateStatus;
 use crate::{tray, AppContext};
 
 /// Errors crossing into the UI are plain strings written for a person to read
@@ -485,6 +486,74 @@ pub fn request_insert_permission(ctx: State<'_, AppContext>) -> CommandResult<()
 pub fn quit_app(app: AppHandle) {
     tracing::info!(event = "app_quit_requested");
     app.exit(0);
+}
+
+/// How far an update check or download has got, for a panel that has just
+/// opened. Progress after that arrives as `update_status_changed` events.
+///
+/// # Errors
+///
+/// Never; the signature matches the other commands so the UI can treat them
+/// alike.
+#[tauri::command]
+pub fn get_update_status(ctx: State<'_, AppContext>) -> CommandResult<UpdateStatus> {
+    Ok(crate::update::status(&ctx))
+}
+
+/// Ask whether a newer version is published. Returns immediately; the answer
+/// arrives as an `update_status_changed` event.
+///
+/// This is the only network call in the app the user has not asked for by
+/// name, which is why the automatic caller behind it is opt-in and off by
+/// default (decision 0006). Reaching it from here always counts as asking.
+///
+/// # Errors
+///
+/// Never: a check that cannot run reports itself through the status, so the
+/// button does not need to distinguish "failed to start" from "failed".
+#[tauri::command]
+pub fn check_for_updates(app: AppHandle) -> CommandResult<()> {
+    crate::update::check(&app, crate::update::Trigger::Manual);
+    Ok(())
+}
+
+/// Download the offered update and put it in place. Returns immediately;
+/// progress arrives as `update_status_changed` events.
+///
+/// # Errors
+///
+/// Never; refusals — nothing offered, a dictation in progress — come back
+/// through the status, beside the button that caused them.
+#[tauri::command]
+pub fn install_update(app: AppHandle) -> CommandResult<()> {
+    crate::update::install(&app);
+    Ok(())
+}
+
+/// Open the release notes for the offered version in the browser.
+///
+/// # Errors
+///
+/// Never; a link that will not open is logged, not reported — the version
+/// number is on screen either way.
+#[tauri::command]
+pub fn open_release_notes(ctx: State<'_, AppContext>) -> CommandResult<()> {
+    crate::update::open_release_notes(&ctx);
+    Ok(())
+}
+
+/// Restart into the version just installed.
+///
+/// Only reachable on macOS in practice: the Windows installer exits the app
+/// itself, so there is no process left to ask.
+///
+/// # Errors
+///
+/// Never; the process is replaced before this could return.
+#[tauri::command]
+pub fn restart_for_update(app: AppHandle) -> CommandResult<()> {
+    crate::update::restart(&app);
+    Ok(())
 }
 
 /// Register or unregister the app as a login item.

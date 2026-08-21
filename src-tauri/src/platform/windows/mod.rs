@@ -39,6 +39,10 @@ pub mod strings {
 
     pub const LOGIN_ITEMS_SETTINGS: &str = "Settings › Apps › Startup";
 
+    /// Named rather than spelled out: the NSIS installer is per-user, so the
+    /// path is under the user's profile and is not somewhere they browse to.
+    pub const INSTALL_LOCATION: &str = "its installation folder";
+
     /// Windows does not gate synthetic input behind a permission, so there is
     /// no page to send the user to.
     pub const INPUT_PERMISSION_SETTINGS_URL: Option<&str> = None;
