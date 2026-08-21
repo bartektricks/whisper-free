@@ -26,6 +26,14 @@ cargo run --release --example refine_check            # installs the cleanup mod
 cargo tree -d | grep ort                              # must show one ort and one ort-sys, never two
 ```
 
+A **lefthook pre-commit hook** (`lefthook.yml`) runs those same checks before every
+commit, filtered by what is staged: `bun run check` for frontend files, then `cargo
+clippy --all-targets -- -D warnings` piped into `cargo test` for anything under
+`src-tauri/`. Clippy and the tests are piped rather than parallel because they share the
+target-dir lock. `bun install` installs the hook through the `prepare` script; if it is
+ever missing, `bunx lefthook install`. Bypass a run with `git commit -n`. It cannot cover
+the CI matrix — a commit made on macOS never compiles `platform/windows/`.
+
 Releases are **manual only**: `.github/workflows/release.yml` has no push or tag
 trigger, and is dispatched from the Actions tab with a choice of release / prerelease /
 draft / artifacts-only, and which platforms to build. It produces an unsigned Apple

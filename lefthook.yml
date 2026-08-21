@@ -1,0 +1,21 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: frontend
+      glob: "*.{ts,svelte,js,html,css,json}"
+      run: bun run check
+
+    - name: rust
+      glob: "*.{rs,toml}"
+      root: "src-tauri/"
+      group:
+        piped: true
+        jobs:
+          - name: clippy
+            run: cargo clippy --all-targets -- -D warnings
+          - name: test
+            run: cargo test
+            
+  skip:
+    - merge
+    - rebase

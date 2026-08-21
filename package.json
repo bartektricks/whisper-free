@@ -11,6 +11,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json --tsgo",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "dotenv -- tauri",
+    "prepare": "lefthook install",
     "clippy": "cargo clippy --manifest-path ./src-tauri/Cargo.toml",
     "clippy:fix": "cargo clippy --manifest-path ./src-tauri/Cargo.toml --fix"
   },
@@ -26,6 +27,7 @@
     "@types/node": "^26.2.0",
     "@typescript/native": "npm:typescript@7",
     "dotenv-cli": "^11.0.0",
+    "lefthook": "^2.1.10",
     "svelte": "^5.56.9",
     "svelte-check": "^4.7.6",
     "typescript": "~6",
