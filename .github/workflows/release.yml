@@ -65,6 +65,8 @@ jobs:
           # it the bundler emits no `.sig`, `tauri-action` skips latest.json,
           # and the release silently reaches nobody's installed copy.
           HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          # Same treatment, same reason: only whether one is set is ever logged.
+          HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
         run: |
           set -euo pipefail
 
@@ -94,6 +96,17 @@ jobs:
 
           if [ "$publishing" = true ] && [ "$HAS_SIGNING_KEY" != true ]; then
             echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set — see docs/RELEASING.md"
+            exit 1
+          fi
+
+          # An unsigned macOS build is not merely unsigned. Its designated requirement
+          # is the cdhash of the executable and nothing else, so macOS keys the
+          # Accessibility and Microphone grants to those exact bytes: shipping one
+          # revokes both on every installed copy the moment it updates, while System
+          # Settings goes on showing them granted and no in-app action can recover it.
+          if [ "$publishing" = true ] && [ "$IN_PLATFORMS" != "Windows only" ] \
+             && [ "$HAS_APPLE_CERT" != true ]; then
+            echo "::error::APPLE_CERTIFICATE is not set — publishing macOS unsigned would strip users' permissions on update; see docs/RELEASING.md"
             exit 1
           fi
 
@@ -184,6 +197,15 @@ jobs:
           # bundles the installed app will refuse.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple code signing, which is what gives the app an identity stable enough
+          # for macOS to keep a permission grant attached to it across an update. The
+          # CLI imports this .p12 into a throwaway keychain and infers the identity
+          # from it, so APPLE_SIGNING_IDENTITY is not needed here; both are ignored by
+          # the Windows job. Deliberately no APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID:
+          # those are what send Tauri down the notarization path, which a self-signed
+          # certificate cannot satisfy and which would fail the build.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         with:
           args: --target ${{ matrix.target }}
           # An empty tagName makes the action build and skip every upload, which is the

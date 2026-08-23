@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Tauri signs with hardened runtime on (`bundle.macOS.hardenedRuntime` defaults
+	  to true), and hardened runtime revokes microphone access unless the binary
+	  carries this. Without it capture fails at the point cpal opens the device,
+	  which reads exactly like a denied permission and is not one.
+	-->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

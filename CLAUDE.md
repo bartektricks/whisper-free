@@ -36,16 +36,24 @@ the CI matrix — a commit made on macOS never compiles `platform/windows/`.
 
 Releases are **manual only**: `.github/workflows/release.yml` has no push or tag
 trigger, and is dispatched from the Actions tab with a choice of release / prerelease /
-draft / artifacts-only, and which platforms to build. It produces an unsigned Apple
-Silicon `.dmg` and a Windows NSIS `-setup.exe`. **The app version lives only in
+draft / artifacts-only, and which platforms to build. It produces a code-signed (but not
+notarized) Apple Silicon `.dmg` and an unsigned Windows NSIS `-setup.exe`. **The app version lives only in
 `src-tauri/Cargo.toml`** — `tauri.conf.json` has no `version` key on purpose, so Tauri
 falls back to the crate version; `package.json` mirrors it and the run fails if the two,
-or the chosen tag, disagree. Publishing also needs `TAURI_SIGNING_PRIVATE_KEY` — the
-update key, unrelated to Apple or Authenticode signing, and **unrecoverable if lost**: no
-later build could produce a signature the installed copies accept. The `resolve` job
-refuses to start without it. A local `bun run tauri build` needs the same key: the `tauri`
-script is `dotenv -- tauri`, so it comes from a gitignored `.env`. See
-`docs/RELEASING.md`.
+or the chosen tag, disagree. Publishing needs two **unrecoverable** secrets.
+`TAURI_SIGNING_PRIVATE_KEY` is the update key, unrelated to Apple or Authenticode signing:
+no later build could produce a signature the installed copies accept. `APPLE_CERTIFICATE`
+is the macOS code-signing identity, and it is what holds the app's *designated requirement*
+stable across versions — an ad-hoc build's requirement is only the cdhash of the
+executable, so macOS keys the Accessibility and Microphone grants to those exact bytes and
+shipping one revokes both on every copy that updates, while System Settings goes on showing
+them granted. The `resolve` job refuses to start without either. A local `bun run tauri
+build` reads the same values plus `APPLE_SIGNING_IDENTITY` from a gitignored `.env` — the
+`tauri` script is `dotenv -- tauri`. Hardened runtime comes with signing, so
+`src-tauri/entitlements.plist` is load-bearing: without
+`com.apple.security.device.audio-input` capture fails in a way that reads exactly like a
+denied permission. See `docs/RELEASING.md` and
+`docs/decisions/0006-in-app-updates.md`.
 
 There is no root `Cargo.toml`; cargo commands run from `src-tauri/`. The examples are
 deliberately outside `cargo test` — they need a microphone, ~671 MB on disk, and network

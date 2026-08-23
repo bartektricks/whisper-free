@@ -58,14 +58,31 @@ browsers use, not by writing files. So an updated app does not need `xattr -cr` 
 not show the "damaged" dialog — the update path is strictly nicer than the manual one it
 replaces.
 
-The cost sits next to it. The app is ad-hoc signed (`docs/RELEASING.md`: `APPLE_SIGNING_IDENTITY`
-is deliberately unset), so macOS TCC has no stable Developer ID to key a permission grant
-to. **Whether Accessibility and Microphone survive an in-place replacement has to be
-measured on a real installed copy, not assumed** — and for an app whose whole job is
-pasting into other applications, silently losing Accessibility is the worst outcome
-available. The verification list in `docs/RELEASING.md` makes that the check that matters;
-if it reproduces, the panel gains a post-update prompt built on the `can_insert_text` and
-`request_insert_permission` commands that already exist.
+The cost sat next to it, and has since been measured. The app was ad-hoc signed, so macOS
+TCC had no stable identity to key a permission grant to. **They do not survive.** An ad-hoc
+build's designated requirement is
+
+```
+# designated => cdhash H"..."
+```
+
+and nothing else, so the grant is keyed to the exact bytes of the executable. Any rebuild
+changes it; `AXIsProcessTrusted()` then returns false while System Settings goes on showing
+the stale entry switched on, which is the worst shape a failure can take — the app asks for
+a permission the UI says it already has, and no in-app action can recover it. It reproduced
+locally first: the icon is decoded and embedded into the binary by `generate_context!` for
+the tray, so *changing the app icon* was enough to void Accessibility.
+
+Microphone degrades more gently, since a changed requirement reads as a new client and
+macOS re-prompts. Accessibility has no prompt to fall back on.
+
+The fix is a fixed code-signing certificate, which makes the requirement name the
+certificate instead of the bytes — `scripts/make-signing-cert.sh`, `entitlements.plist`,
+and the `APPLE_CERTIFICATE` guard in `release.yml` that now refuses to publish macOS
+without one. This amended `docs/RELEASING.md`, where `APPLE_SIGNING_IDENTITY` had been
+described as deliberately unset. The post-update prompt built on `can_insert_text` and
+`request_insert_permission` is no longer needed for this, and would not have helped:
+`request_insert_permission` opens a pane that already shows the permission as granted.
 
 ## Decisions inside the decision
 

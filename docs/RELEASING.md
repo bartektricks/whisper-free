@@ -3,145 +3,82 @@
 Releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml),
 which runs **only when you start it** from the Actions tab — there is no trigger that fires
 on a push or a tag. Both platforms build in one run, because the Windows backend cannot be
-cross-compiled from macOS. Both artifacts are **unsigned**: there is no Apple Developer
-account and no Authenticode certificate. They are, separately, **update-signed** — see
-below; the two are unrelated and only the second one exists here.
+cross-compiled from macOS.
 
-## The version lives in one place
+## Steps
 
-`src-tauri/Cargo.toml`. `tauri.conf.json` deliberately has no `version` key, so Tauri falls
-back to the crate version. `package.json` carries the same number for tidiness — it is
-`private: true` and nothing reads it — and the run fails immediately if the two drift apart.
-
-## The update signing key
-
-In-app updates (decision 0006) need a minisign keypair. This is **not** Apple code signing
-or Authenticode: it costs nothing, needs no developer account, and exists only so an
-installed copy can tell that a download came from this repository. The plugin will not
-accept an unsigned update, so it is not optional.
-
-Set up once:
-
-```sh
-bun tauri signer generate -w ~/.tauri/whisper-free.key
-```
-
-- The public half (`~/.tauri/whisper-free.key.pub`, its **contents**, not the path) goes in
-  `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`, and is committed.
-- The private half and its password become the repository secrets
-  `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`:
-
-  ```sh
-  gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/whisper-free.key
-  gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD   # paste it, or an empty line for none
-  ```
-
-**Back the private key up somewhere you will still have it in two years.** It is the one
-piece of this repository that cannot be regenerated: replace it and every installed copy
-rejects every future update, because it is verifying against the public key baked into the
-build it is already running. There is no recovery except telling people to reinstall.
-
-The `resolve` job refuses to publish without the secret, in seconds, rather than after two
-half-hour builds that would produce bundles nothing can install.
-
-### Building locally
-
-`createUpdaterArtifacts` is on, so `bun run tauri build` wants the private key too and
-stops with *"A public key has been found, but no private key"* without it. It comes from
-`.env`, which is gitignored:
-
-```sh
-TAURI_SIGNING_PRIVATE_KEY=…              # contents of ~/.tauri/whisper-free.key, not its path
-TAURI_SIGNING_PRIVATE_KEY_PASSWORD=…
-```
-
-`tauri signer generate` already writes that file as a single base64 line, so it goes in
-unquoted and needs no re-encoding.
-
-The `tauri` script is `dotenv -- tauri` because the variable has to be in the *real* process
-environment before the CLI starts. The CLI is a native addon that runs inside bun and reads
-its environment through Rust's `std::env::var`; bun's own handling of `.env` — the automatic
-load and `--env-file` alike — populates only the JS `process.env`, which that addon cannot
-see. `dotenv-cli` exports and then spawns, so the value survives; the `dotenv` *library*,
-which assigns to `process.env` and nothing more, would not. A missing `.env` is a no-op, so
-the script behaves exactly as before for anyone without a key.
-
-## Cutting a release
-
-1. Make sure the commit you are releasing is green on `ci.yml`. The release workflow does
-   not re-run clippy or the tests.
-2. Bump the version in `src-tauri/Cargo.toml` and `package.json`.
-3. `cd src-tauri && cargo check` — this updates the `whisper-free` entry in
-   `Cargo.lock`. Commit and push all three files.
+1. Make sure the commit is green on `ci.yml`. The release workflow does not re-run clippy
+   or the tests.
+2. Bump the version in `src-tauri/Cargo.toml` and `package.json`. They must match, and the
+   run fails immediately if they drift. `tauri.conf.json` has no `version` key on purpose —
+   Tauri falls back to the crate version.
+3. `cd src-tauri && cargo check` to update `Cargo.lock`. Commit and push all three files.
 4. **Actions › Release › Run workflow**, pick the branch, and choose:
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| **What to publish** | `prerelease` | `prerelease` flags it as such so it never becomes the Latest download — **and so the updater never offers it**. `release` publishes it as Latest, which is what puts it in front of existing installs. `artifacts only (no release, no tag)` builds and attaches the bundles to the run — no tag, no release, nothing public. |
-| **Draft** | off | Publishes as a draft, so nothing is visible until you press Publish on the release page — and **a draft reaches no one's updater** until you do. Combines with either release type; ignored for artifacts only. |
-| **Which platforms** | `both` | `macOS only` / `Windows only` for a one-platform build. Handy for smoke-testing Windows without waiting on the Mac job. |
-| **Tag** | blank | Blank means `v` + the version in `Cargo.toml`, which is almost always what you want. Anything you type must still match that version. |
+| **What to publish** | `prerelease` | `prerelease` never becomes the Latest download, so **the updater never offers it**. `release` publishes as Latest, which is what reaches existing installs. `artifacts only` builds and attaches bundles to the run — no tag, no release. |
+| **Draft** | off | Nothing is visible, and **no updater sees it**, until you press Publish. |
+| **Which platforms** | `both` | One-platform builds are for smoke-testing without waiting on the other job. |
+| **Tag** | blank | Blank means `v` + the version in `Cargo.toml`. Anything you type must match it. |
 
-**Choosing `release`, without `draft`, is now the act that ships to everyone.** That is the
-only combination GitHub resolves as Latest, and the updater endpoint is
-`releases/latest/download/latest.json`. The run summary says which of the two it is before
-either build starts.
+**`release` without `draft` is the act that ships to everyone** — that is the only
+combination GitHub resolves as Latest, and the updater endpoint is
+`releases/latest/download/latest.json`. The run summary states the plan before either
+build starts.
 
-The tag does not need to exist beforehand — GitHub creates it at the commit you dispatched
-from. The run's summary page states the plan (tag, commit, release type, platforms) before
-either build starts.
+Budget **20–30 minutes per platform**; release builds are cold every time.
 
 Output: `WhisperFree_<version>_aarch64.dmg`, `WhisperFree.app.tar.gz`, and
-`WhisperFree_<version>_x64-setup.exe`, with install instructions in the release body and
-GitHub's generated commit notes underneath. Alongside them, for the updater: a `.sig` next
-to each bundle and one `latest.json` listing both platforms.
+`WhisperFree_<version>_x64-setup.exe`, plus a `.sig` beside each bundle and one
+`latest.json` listing both platforms.
 
-Budget **20–30 minutes per platform**. Release builds are cold every time: `lto = true`
-with `codegen-units = 1`, plus `ort-sys` downloading a prebuilt ONNX Runtime. Caches are
-scoped by ref and are not usefully reusable here.
+## Secrets the workflow needs
 
-## Trying a build without releasing
+| Secret | Why |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | Signs the update artifacts. The plugin refuses an unsigned update, so without it a release reaches nobody. |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | |
+| `APPLE_CERTIFICATE` | Apple code signing, base64 `.p12`. Gives the macOS build an identity stable across versions, which is what lets macOS keep Accessibility and Microphone granted through an update. |
+| `APPLE_CERTIFICATE_PASSWORD` | |
 
-Choose **artifacts only (no release, no tag)**. The bundles land as workflow artifacts on
-the run, and nothing on the Releases page is created or touched. This is the way to test
-the Windows installer before committing to a tag.
+The `resolve` job refuses to start without them, in seconds, rather than after two
+half-hour builds that would produce bundles nothing can install or that would strip every
+user's permissions. **None of the four can be regenerated** — replacing the update key
+makes every installed copy reject every future update, and replacing the certificate costs
+every installed copy its permissions once. See
+[decision 0006](decisions/0006-in-app-updates.md).
+
+First-time setup: `bun tauri signer generate -w ~/.tauri/whisper-free.key` for the update
+key, whose public half goes in `tauri.conf.json` under `plugins.updater.pubkey`, and
+`scripts/make-signing-cert.sh` for the certificate.
+
+## Building locally
+
+`createUpdaterArtifacts` is on, so `bun run tauri build` stops with *"A public key has been
+found, but no private key"* without the update key. Copy `.env.example` to `.env`, which is
+gitignored, and fill in the three values it documents.
+
+`APPLE_SIGNING_IDENTITY` names the certificate in your login keychain — the certificate
+material itself is only needed on CI, which starts blank. Omitting it still builds; it just
+leaves the ad-hoc signature, which costs you Accessibility on every rebuild.
+
+The `tauri` script is `dotenv -- tauri` because the variables have to be in the *real*
+process environment before the CLI starts. The CLI is a native addon that reads its
+environment through Rust's `std::env::var`; bun's own `.env` handling populates only the JS
+`process.env`, which that addon cannot see. A missing `.env` is a no-op.
 
 ## Things that can bite
 
-- **`Cargo.lock` is load-bearing.** `windows-core` is pinned to 0.61 there and nowhere
-  else; at 0.62 `cpal` stops compiling on Windows. The workflow runs `cargo fetch --locked`
-  before building, so a stale lockfile fails immediately instead of being silently updated.
-- **Don't pass `--bundles` to the build.** Targets come from `tauri.macos.conf.json`
-  (`app`, `dmg`) and `tauri.windows.conf.json` (`nsis`), which Tauri merges automatically;
-  a CLI flag would override both.
+- **The bundler is configured in two files**, `tauri.conf.json` (`app`, `dmg`) and
+  `tauri.windows.conf.json` (`nsis`), which Tauri merges. A CLI flag would override both.
 - **Whichever platform finishes first creates the release**, and the other uploads into it.
-  `tauri-action` does not retry that find-or-create, so in the very unlikely event both
-  land in the same instant, one job fails with `already_exists`. Re-run the failed job — it
-  will find the release the other one made.
-- **`latest.json` is written the same racy way, but fails quietly.** Each job reads the
-  copy already attached to the release, merges in the platform it built, and re-uploads. If
-  both read before either writes, one platform vanishes from the manifest and its users are
-  simply told no update is published for their computer. The `verify` job downloads the
-  finished manifest and fails if either `darwin-aarch64` or `windows-x86_64` is missing;
-  the fix is to re-run the build job for the platform that lost.
-- **`APPLE_SIGNING_IDENTITY` is deliberately unset.** Tauri then skips `codesign` and the
-  binary keeps the linker's ad-hoc signature, which is all an arm64 binary needs to launch.
-  Setting it — even to `-` — risks sending Tauri down the notarization path.
-- **A one-platform build still publishes a release** if you ask it to; the run summary warns
-  you that the other platform's artifact will be missing.
-
-## If Apple signing is ever added
-
-Separate from the update key above, and still missing. macOS needs an Apple Developer
-account, a `.p12` in secrets (`APPLE_CERTIFICATE`,
-`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`,
-`APPLE_TEAM_ID` — `tauri-action` reads all of them from the environment), plus an
-entitlements file granting `com.apple.security.device.audio-input`, which does not exist
-yet. Only then can the `xattr -cr` step disappear from the release notes — it is already
-unnecessary for an *update*, which replaces the bundle without ever marking it quarantined,
-but a fresh download from the Releases page still needs it.
-
-It would also settle the open question in decision 0006: an ad-hoc signed app has no stable
-identity for macOS to key a permission grant to, so **whether Accessibility and Microphone
-survive an in-place update has to be checked on a real installed copy after every change to
-the update path**. A Developer ID would make the answer "yes" by construction.
+  In the unlikely event both land at once, one job fails with `already_exists` — re-run it.
+- **`latest.json` is written the same racy way, but fails quietly.** Each job merges its
+  platform into the copy already attached. If both read before either writes, one platform
+  vanishes from the manifest and its users are told no update is published for their
+  computer. The `verify` job catches this; the fix is to re-run the build job that lost.
+- **Downloads are not notarized**, so a fresh `.dmg` from the Releases page still needs
+  `xattr -cr`. An *update* does not — it replaces the bundle without marking it
+  quarantined.
+- **A one-platform build still publishes a release** if you ask it to.
