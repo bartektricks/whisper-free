@@ -109,7 +109,9 @@ Done. The certificate lives in $OUT_DIR.
      This certificate cannot be regenerated: losing it costs every installed copy
      its permissions on the next update.
 
-  3. For CI, set these two repository secrets:
+  3. For CI, set these two repository secrets. Repository secrets only, never .env:
+     given both, the Tauri CLI imports the .p12 itself and then fails to resolve a
+     self-signed identity. The release workflow installs the certificate on its own.
 
      APPLE_CERTIFICATE           $(base64 < "$OUT_DIR/cert.p12" | tr -d '\n' | cut -c1-24)...  (full value below)
      APPLE_CERTIFICATE_PASSWORD  (contents of $OUT_DIR/password.txt)

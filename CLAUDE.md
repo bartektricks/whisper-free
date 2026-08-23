@@ -47,9 +47,15 @@ is the macOS code-signing identity, and it is what holds the app's *designated r
 stable across versions — an ad-hoc build's requirement is only the cdhash of the
 executable, so macOS keys the Accessibility and Microphone grants to those exact bytes and
 shipping one revokes both on every copy that updates, while System Settings goes on showing
-them granted. The `resolve` job refuses to start without either. A local `bun run tauri
-build` reads the same values plus `APPLE_SIGNING_IDENTITY` from a gitignored `.env` — the
-`tauri` script is `dotenv -- tauri`. Hardened runtime comes with signing, so
+them granted. The `resolve` job refuses to start without either. **Neither
+`APPLE_CERTIFICATE` nor its password may reach the Tauri CLI's environment**: given both,
+the CLI imports the `.p12` itself and then resolves the identity through a list that only
+recognises Apple-issued certificate names, so a self-signed one dies at `failed to resolve
+signing identity` *after* importing cleanly. The `Set up code signing` step in
+`release.yml` installs it instead — into a throwaway keychain, trusted for code signing,
+without which `codesign` reports the identity as missing rather than untrusted — and
+exports only `APPLE_SIGNING_IDENTITY`. A local `bun run tauri build` reads that name, and
+the update key pair, from a gitignored `.env` — the `tauri` script is `dotenv -- tauri`. Hardened runtime comes with signing, so
 `src-tauri/entitlements.plist` is load-bearing: without
 `com.apple.security.device.audio-input` capture fails in a way that reads exactly like a
 denied permission. See `docs/RELEASING.md` and
