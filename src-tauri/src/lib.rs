@@ -450,7 +450,22 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     let settings_file = settings::settings_path(&data_dir);
     let first_run = !settings_file.exists();
-    let settings = Settings::load(&settings_file);
+    let mut settings = Settings::load(&settings_file);
+
+    // The one place onboarding is ever marked pending (decision 0007). The
+    // field defaults to `true` so that a settings file written before
+    // onboarding existed does not send an established user through it; no
+    // settings file at all is the only evidence of a genuinely fresh install.
+    // It is written to disk right away, so quitting halfway through setup
+    // resumes it on the next launch rather than skipping it forever.
+    if first_run {
+        tracing::info!(event = "first_run");
+        settings.onboarding_completed = false;
+        if let Err(e) = settings.save(&settings_file) {
+            tracing::warn!(error = %e, "could not record that onboarding is pending");
+        }
+    }
+    let onboarding_pending = !settings.onboarding_completed;
     let data_dir_for_store = data_dir.clone();
     let dictionary = dictionary::Dictionary::load(&dictionary::dictionary_path(&data_dir));
 
@@ -550,9 +565,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     update::watch(app.handle());
 
     // A menu-bar app that shows nothing at all on first launch reads as a
-    // failed install, so introduce ourselves once.
-    if first_run {
-        tracing::info!(event = "first_run");
+    // failed install, so introduce ourselves, and keep doing so until setup has
+    // actually been finished: a run abandoned halfway leaves the app without a
+    // model, without permissions, and with no sign of either.
+    if onboarding_pending {
+        tracing::info!(event = "onboarding_pending");
         tray::show_settings_window(app.handle())?;
     }
 
@@ -623,6 +640,8 @@ pub fn run() {
             commands::delete_dictionary_entry,
             commands::can_insert_text,
             commands::request_insert_permission,
+            commands::get_permissions,
+            commands::request_microphone_permission,
             commands::quit_app,
             commands::get_update_status,
             commands::check_for_updates,

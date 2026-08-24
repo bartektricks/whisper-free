@@ -14,6 +14,10 @@ const DEFAULTS: Settings = {
   refine_enabled: false,
   refine_model_id: "qwen2.5-0.5b-instruct",
   check_for_updates: false,
+  // True, like the Rust default, and for the same reason: the onboarding
+  // takeover is keyed off this, and a `false` here would flash setup over the
+  // settings window for the moment before `load()` returns.
+  onboarding_completed: true,
 };
 
 function createSettingsStore() {

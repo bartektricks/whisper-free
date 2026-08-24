@@ -5,6 +5,7 @@
 //! `platform/mod.rs`.
 
 pub mod focus;
+pub mod permissions;
 pub mod replay;
 pub mod text;
 
@@ -28,6 +29,10 @@ pub const TRAY_ICON_IS_TEMPLATE: bool = false;
 /// Windows convention: left click performs the primary action, right click
 /// opens the menu. `tray.rs` opens Settings on left click instead.
 pub const TRAY_MENU_ON_LEFT_CLICK: bool = false;
+
+/// Windows does not gate synthetic input behind a permission, so there is
+/// nothing for the user to grant and nothing to ask them for.
+pub const INPUT_PERMISSION_REQUIRED: bool = false;
 
 pub mod strings {
     pub const PASTE_SHORTCUT: &str = "Ctrl+V";

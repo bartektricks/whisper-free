@@ -1,72 +1,15 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { onMount } from "svelte";
+  import { models } from "../../stores/models";
   import { formatBytes, summariseLanguages } from "../../lib/format";
-  import type { ModelInfo, DownloadProgress, DownloadFailure } from "../../types";
+  import type { ModelInfo } from "../../types";
 
-  let models = $state<ModelInfo[]>([]);
-  let progress = $state<Record<string, DownloadProgress>>({});
-  let errors = $state<Record<string, string>>({});
-  let unlisteners: UnlistenFn[] = [];
+  const speech = $derived($models.models.filter((m) => m.kind === "speech"));
+  const refiners = $derived($models.models.filter((m) => m.kind === "refiner"));
 
-  const speech = $derived(models.filter((m) => m.kind === "speech"));
-  const refiners = $derived(models.filter((m) => m.kind === "refiner"));
-
-  async function refresh() {
-    models = await invoke<ModelInfo[]>("get_models");
-  }
-
-  async function download(id: string) {
-    errors = { ...errors, [id]: "" };
-    progress = {
-      ...progress,
-      [id]: { model_id: id, file: "", downloaded_bytes: 0, total_bytes: 0 },
-    };
-    try {
-      await invoke("download_model", { modelId: id });
-    } catch (e) {
-      errors = { ...errors, [id]: String(e) };
-      const { [id]: _dropped, ...rest } = progress;
-      progress = rest;
-    }
-  }
-
-  async function cancel(id: string) {
-    await invoke("cancel_model_download", { modelId: id });
-  }
-
-  async function remove(id: string) {
-    await invoke("delete_model", { modelId: id });
-    await refresh();
-  }
-
-  onMount(async () => {
-    await refresh();
-
-    unlisteners.push(
-      await listen<DownloadProgress>("model_download_progress", (event) => {
-        progress = { ...progress, [event.payload.model_id]: event.payload };
-      }),
-    );
-    unlisteners.push(
-      await listen<string>("model_download_completed", async (event) => {
-        const { [event.payload]: _done, ...rest } = progress;
-        progress = rest;
-        await refresh();
-      }),
-    );
-    unlisteners.push(
-      await listen<DownloadFailure>("model_download_failed", async (event) => {
-        const { [event.payload.model_id]: _failed, ...rest } = progress;
-        progress = rest;
-        errors = { ...errors, [event.payload.model_id]: event.payload.message };
-        await refresh();
-      }),
-    );
+  onMount(() => {
+    models.refresh().catch((e) => console.error("could not list models", e));
   });
-
-  onDestroy(() => unlisteners.forEach((stop) => stop()));
 </script>
 
 <section>
@@ -77,7 +20,7 @@
   </p>
 
   {#snippet card(model: ModelInfo)}
-    {@const active = progress[model.id]}
+    {@const active = $models.progress[model.id]}
     <article class="model">
       <div class="head">
         <div>
@@ -92,12 +35,12 @@
 
         <div class="actions">
           {#if active}
-            <button type="button" onclick={() => cancel(model.id)}>Cancel</button>
+            <button type="button" onclick={() => models.cancel(model.id)}>Cancel</button>
           {:else if model.installed}
             <span class="installed">Downloaded</span>
-            <button type="button" onclick={() => remove(model.id)}>Remove</button>
+            <button type="button" onclick={() => models.remove(model.id)}>Remove</button>
           {:else}
-            <button type="button" class="primary" onclick={() => download(model.id)}>
+            <button type="button" class="primary" onclick={() => models.download(model.id)}>
               Download
             </button>
           {/if}
@@ -123,8 +66,8 @@
         </p>
       {/if}
 
-      {#if errors[model.id]}
-        <p class="error" role="alert">{errors[model.id]}</p>
+      {#if $models.errors[model.id]}
+        <p class="error" role="alert">{$models.errors[model.id]}</p>
       {/if}
     </article>
   {/snippet}

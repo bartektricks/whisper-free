@@ -11,8 +11,10 @@
   import ModelSettings from "./components/Settings/ModelSettings.svelte";
   import CleanupSettings from "./components/Settings/CleanupSettings.svelte";
   import UpdateSettings from "./components/Settings/UpdateSettings.svelte";
+  import Onboarding from "./components/Onboarding/Onboarding.svelte";
 
   const settingsError = settings.error;
+  const settingsLoaded = settings.loaded;
 
   const SECTIONS = [
     { id: "general", label: "General" },
@@ -47,6 +49,15 @@
   });
 </script>
 
+<!--
+  First-run setup takes the whole window (decision 0007). It waits for the
+  settings to have actually loaded: the store starts on defaults, and the
+  default is "already onboarded", so this neither flashes setup over an
+  established install nor flashes settings over a fresh one.
+-->
+{#if $settingsLoaded && !$settings.onboarding_completed}
+  <Onboarding />
+{:else}
 <div class="shell">
   <nav>
     <div class="brand">WhisperFree</div>
@@ -93,6 +104,7 @@
     {/if}
   </main>
 </div>
+{/if}
 
 <style>
   .shell {

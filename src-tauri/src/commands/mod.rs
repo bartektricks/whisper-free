@@ -11,6 +11,7 @@ use crate::audio::AudioDevice;
 use crate::dictionary::{Dictionary, DictionaryEntry};
 use crate::models::download::CancelFlag;
 use crate::models::{ModelError, ModelInfo};
+use crate::platform::PermissionState;
 use crate::settings::Settings;
 use crate::state::StateSnapshot;
 use crate::update::UpdateStatus;
@@ -468,6 +469,58 @@ fn persist_dictionary(ctx: &AppContext, dictionary: &Dictionary) -> CommandResul
 #[tauri::command]
 pub fn can_insert_text(ctx: State<'_, AppContext>) -> CommandResult<bool> {
     Ok(ctx.inserter.can_insert())
+}
+
+/// Where every permission dictation needs currently stands.
+///
+/// One command rather than one per permission, because onboarding and the
+/// General panel both want the whole picture and poll for it. The user grants
+/// these in another application, so there is no event to wait for.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct Permissions {
+    /// Whether the OS will let us open a microphone.
+    pub microphone: PermissionState,
+    /// Whether the OS will let us paste into other applications.
+    /// [`PermissionState::NotRequired`] where the platform does not ask.
+    pub accessibility: PermissionState,
+}
+
+/// # Errors
+///
+/// Never; the signature matches the other commands so the UI can treat them
+/// alike.
+#[tauri::command]
+pub fn get_permissions(ctx: State<'_, AppContext>) -> CommandResult<Permissions> {
+    // Accessibility has no "not yet asked": `AXIsProcessTrusted` answers yes or
+    // no, and macOS shows its prompt at most once, which is why
+    // `request_insert_permission` opens the pane rather than asking again.
+    let accessibility = if crate::platform::input_permission_required() {
+        if ctx.inserter.can_insert() {
+            PermissionState::Granted
+        } else {
+            PermissionState::Denied
+        }
+    } else {
+        PermissionState::NotRequired
+    };
+
+    Ok(Permissions {
+        microphone: crate::platform::microphone_permission(),
+        accessibility,
+    })
+}
+
+/// Ask for microphone access: a system prompt where there is one to raise, the
+/// settings pane where there is not.
+///
+/// # Errors
+///
+/// Never; what happened is read back through [`get_permissions`], which the UI
+/// polls, because the answer is given in another application.
+#[tauri::command]
+pub fn request_microphone_permission() -> CommandResult<()> {
+    crate::platform::request_microphone_permission();
+    Ok(())
 }
 
 /// Open the Accessibility settings pane so the user can grant permission.

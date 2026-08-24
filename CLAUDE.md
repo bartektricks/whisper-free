@@ -128,6 +128,23 @@ updater endpoint is `releases/latest/download/latest.json`, which GitHub resolve
 neither a prerelease nor a draft, so choosing `release` in the workflow is the act that
 ships to users. See `docs/decisions/0006-in-app-updates.md`.
 
+**Onboarding** is a takeover of the settings window, not a window of its own:
+`App.svelte` renders `components/Onboarding/` instead of the settings shell while
+`settings.onboarding_completed` is false. That flag **defaults to `true`**, which is
+load-bearing: `Settings` is `#[serde(default)]`, so a file written before onboarding
+existed has no such key and a `false` default would re-onboard every existing user. The
+one place it becomes false is a first run in `setup` (`lib.rs`), detected as "no settings
+file at all" and written to disk immediately so an abandoned run resumes. The window is
+opened on that flag rather than on `first_run`. Permissions come from
+`commands::get_permissions`, which returns a `platform::PermissionState` per capability;
+`Unasked` is the only value with a system prompt behind it, `Denied` only earns a link to
+a settings pane, and `NotRequired` is how Windows says it does not gate synthetic input,
+which is what removes the Accessibility step there. Nothing is granted in this process, so
+`stores/permissions.ts` polls; it is a `readable`, so it only polls while the settings
+window is open. No step blocks the next one: the primary button changes its label to
+`Skip for now` instead of being disabled, and the last panel lists what was skipped. See
+`docs/decisions/0007-first-run-onboarding.md`.
+
 **Overlay (`overlay.rs`)** is the floating indicator, a second window labelled
 `overlay` declared in `tauri.conf.json`. Rust decides *whether* it is on screen and
 *where*; the webview (`src/overlay/`, its own Vite entry) decides what it looks like,
@@ -206,6 +223,11 @@ the `state_changed` event, and `stores/update.ts` is the same shape over
 state, because `App.svelte` renders one section at a time with no keepalive and switching
 away mid-download would otherwise destroy the progress; `stores/settings.ts` writes optimistically and then replaces
 state with whatever `update_settings` returns, since the backend may reject or normalise.
+`stores/models.ts` exists for the same keepalive reason as `update.ts`, and its listeners
+are attached at module load rather than on mount, so a 671 MB download survives switching
+section, finishing onboarding, or closing the window; onboarding and Settings › Models are
+two views of one download. A component may not name a variable `state`: `$state` is a
+rune, and Svelte then reads it as a store subscription.
 There are two entry points, `index.html` and `overlay.html`, listed in
 `vite.config.ts` — a new window means a new entry there, a `label` in
 `tauri.conf.json`, and a capability file naming that label, or `listen`/`invoke` are

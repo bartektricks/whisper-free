@@ -1,6 +1,6 @@
 [package]
 name = "whisper-free"
-version = "0.3.0"
+version = "0.4.0"
 description = "Fully local dictation"
 authors = ["Bartlomiej Ciszewski"]
 edition = "2021"
@@ -88,6 +88,11 @@ core-graphics = "0.25.0"
 # (`platform/macos/focus.rs`). Both are already in the tree via core-graphics
 # and tao, so the versions are pinned to match rather than to add a second copy.
 core-foundation = "0.10.1"
+
+# Only to hand `AVCaptureDevice` a completion handler when asking macOS for
+# microphone access (`platform/macos/permissions.rs`). Already in the tree via
+# cpal, so the version is pinned to match rather than to add a second copy.
+block2 = "0.6.2"
 
 # Two things Tauri does not expose: the overlay's window level and Spaces
 # behaviour (`platform/macos/window.rs`), and the launch activation settled in

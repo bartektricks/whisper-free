@@ -58,6 +58,15 @@ pub struct Settings {
     /// the only thing in the app that reaches the network without the user
     /// pressing a button for it, so it does not happen until they say so.
     pub check_for_updates: bool,
+    /// Whether the user has been through first-run setup (decision 0007).
+    ///
+    /// **Defaults to `true`, deliberately.** A settings file written before
+    /// onboarding existed has no such key, and serde fills the gap from
+    /// `Default`, so a `false` default would march every established user
+    /// through a tour of permissions they granted months ago. The single place
+    /// it becomes `false` is a first run, where `setup` in `lib.rs` finds no
+    /// settings file at all and writes one saying so.
+    pub onboarding_completed: bool,
 }
 
 impl Default for Settings {
@@ -74,6 +83,7 @@ impl Default for Settings {
             refine_enabled: false,
             refine_model_id: DEFAULT_REFINE_MODEL_ID.to_string(),
             check_for_updates: false,
+            onboarding_completed: true,
         }
     }
 }
@@ -182,6 +192,26 @@ mod tests {
         let s = Settings::load(&path);
         assert!(s.show_overlay);
         assert_eq!(s.overlay_anchor, OverlayAnchor::BottomCentre);
+    }
+
+    /// The regression this default exists for: an install from before
+    /// onboarding must not be sent through it on the next launch.
+    #[test]
+    fn a_file_from_before_onboarding_is_treated_as_already_onboarded() {
+        let dir = temp_dir("pre-onboarding");
+        let path = settings_path(&dir);
+        std::fs::write(&path, r#"{"hotkey":"Alt+D","start_at_login":true}"#).unwrap();
+        assert!(Settings::load(&path).onboarding_completed);
+    }
+
+    /// The other half of the same rule: once a first run has written the flag,
+    /// quitting halfway through setup resumes it rather than skipping it.
+    #[test]
+    fn a_file_that_says_onboarding_is_pending_is_believed() {
+        let dir = temp_dir("mid-onboarding");
+        let path = settings_path(&dir);
+        std::fs::write(&path, r#"{"onboarding_completed":false}"#).unwrap();
+        assert!(!Settings::load(&path).onboarding_completed);
     }
 
     #[test]
