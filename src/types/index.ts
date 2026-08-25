@@ -46,6 +46,24 @@ export interface Settings {
   refine_enabled: boolean;
   refine_model_id: string;
   check_for_updates: boolean;
+  onboarding_completed: boolean;
+}
+
+/** Mirrors `platform::PermissionState`. */
+export type PermissionState =
+  | "granted"
+  | "denied"
+  /** Never asked, and asking will put a system prompt on screen. */
+  | "unasked"
+  /** The platform will not say; the capability has to be tried. */
+  | "unknown"
+  /** This platform does not gate the capability at all. */
+  | "not_required";
+
+/** Mirrors `commands::Permissions`. */
+export interface Permissions {
+  microphone: PermissionState;
+  accessibility: PermissionState;
 }
 
 /** Mirrors `audio::AudioDevice`. */

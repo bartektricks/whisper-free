@@ -5,6 +5,7 @@
 //! `platform/mod.rs`.
 
 pub mod focus;
+pub mod permissions;
 pub mod replay;
 pub mod text;
 pub mod window;
@@ -28,6 +29,10 @@ pub const TRAY_ICON_IS_TEMPLATE: bool = true;
 
 /// Menu-bar items open their menu on either button.
 pub const TRAY_MENU_ON_LEFT_CLICK: bool = true;
+
+/// macOS withholds synthetic input behind Accessibility, so the permission
+/// is a step the user has to take before dictation can paste anything.
+pub const INPUT_PERMISSION_REQUIRED: bool = true;
 
 pub mod strings {
     pub const PASTE_SHORTCUT: &str = "Cmd+V";

@@ -40,6 +40,11 @@ export function microphoneSettings(): string {
     : "Settings › Privacy & security › Microphone";
 }
 
+/** Where permission to paste into other apps is granted, in words. */
+export function accessibilitySettings(): string {
+  return "System Settings › Privacy & Security › Accessibility";
+}
+
 /**
  * What happens to the running app while an update installs.
  *

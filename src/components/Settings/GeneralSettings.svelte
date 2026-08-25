@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import Row from "../common/Row.svelte";
   import { settings } from "../../stores/settings";
   import { toAccelerator, formatAccelerator, toChord } from "../../lib/hotkey";
   import { trayName } from "../../lib/platform";
+  import { permissions, requestAccessibility } from "../../stores/permissions";
   import type { OverlayAnchor, RecordingMode } from "../../types";
 
   /**
@@ -21,21 +22,13 @@
   let capturing = $state<"off" | "first" | "second">("off");
   let firstStep = $state<string | null>(null);
   let captureError = $state<string | null>(null);
-  let canInsert = $state(true);
   let captureButton = $state<HTMLButtonElement | null>(null);
   let chordTimer: ReturnType<typeof setTimeout> | null = null;
 
-  async function checkPermission() {
-    canInsert = await invoke<boolean>("can_insert_text");
-  }
-
-  async function grantPermission() {
-    await invoke("request_insert_permission");
-    // The user grants it in System Settings, so re-check when they come back.
-    setTimeout(checkPermission, 3000);
-  }
-
-  onMount(checkPermission);
+  // Polled rather than checked once: it is granted in System Settings, so the
+  // app is not the thing that finds out, and the row has to stop nagging by
+  // itself when the user comes back.
+  const canInsert = $derived($permissions.accessibility !== "denied");
 
   /**
    * Capture listens on the window rather than on the button.
@@ -248,10 +241,19 @@
     >
       <div class="permission">
         <span class="warn">Accessibility access not granted</span>
-        <button type="button" onclick={grantPermission}>Open System Settings</button>
+        <button type="button" onclick={requestAccessibility}>Open System Settings</button>
       </div>
     </Row>
   {/if}
+
+  <Row
+    label="Setup"
+    hint="Walks through the permissions and the model download again. Nothing is reset; it only shows you where everything is."
+  >
+    <button type="button" onclick={() => settings.update({ onboarding_completed: false })}>
+      Run setup again
+    </button>
+  </Row>
 
   <Row
     label="Startup"

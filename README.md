@@ -54,8 +54,23 @@ bun run tauri dev
 ```
 
 The app has no Dock icon by design — it lives in the macOS menu bar, or the
-Windows notification area. On first launch it opens its settings window to
-introduce itself.
+Windows notification area.
+
+### First launch
+
+A fresh install opens a short setup: microphone access, permission to paste into
+other apps, the speech model download, and an optional cleanup model. Nothing in
+it is mandatory, and anything skipped is listed on the last panel so you know
+what is still missing. Quitting halfway resumes it next time; once it is done,
+Settings › General has **Run setup again**, which walks the same steps without
+resetting anything. See
+[`docs/decisions/0007-first-run-onboarding.md`](docs/decisions/0007-first-run-onboarding.md).
+
+On macOS both permissions are granted in System Settings, and the setup panel
+notices by itself when you flick the switch. Windows has no Accessibility
+permission to grant, so that step is not shown there, and it does not report
+microphone access for a desktop app in advance — which is why the microphone
+panel offers a three-second test instead.
 
 The default hotkey is ⌥Space on macOS and Ctrl+Alt+Space on Windows, where
 Alt+Space belongs to the system window menu.

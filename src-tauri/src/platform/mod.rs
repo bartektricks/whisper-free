@@ -23,6 +23,7 @@ compile_error!(
      src/platform/mod.rs — see docs/decisions/0002-cross-platform-platform-layer.md"
 );
 
+use serde::Serialize;
 use tauri::{AppHandle, Monitor, PhysicalPosition, PhysicalSize, Position};
 
 use crate::text_insertion::TextInserter;
@@ -155,6 +156,60 @@ pub const fn tray_menu_on_left_click() -> bool {
 /// because the message that offered the button already names the pane in words.
 pub fn open_microphone_settings() {
     open_url(strings::MICROPHONE_SETTINGS_URL);
+}
+
+/// How the operating system has answered a permission the app needs.
+///
+/// Five variants rather than a `bool` because the difference between them is
+/// the difference between the things the UI can offer to do: only `Unasked`
+/// has a prompt behind it, only `Denied` is worth sending someone to a
+/// settings pane for, and `Unknown` means the platform will not say, so
+/// trying it is the only way to find out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionState {
+    Granted,
+    /// Refused, or restricted by a policy the user cannot change. Both need
+    /// the same thing from them: a trip to the settings pane.
+    Denied,
+    /// Nobody has been asked yet, and asking will put a prompt on screen.
+    Unasked,
+    /// The platform will not say. The capability has to be tried to find out.
+    Unknown,
+    /// This platform does not gate the capability at all.
+    NotRequired,
+}
+
+/// Whether the OS will let the app open a microphone.
+#[must_use]
+// Windows answers with a constant, macOS asks AVFoundation. Only one platform
+// can be right about this.
+#[cfg_attr(target_os = "windows", allow(clippy::missing_const_for_fn))]
+pub fn microphone_permission() -> PermissionState {
+    backend::permissions::microphone()
+}
+
+/// Ask for microphone access in whichever way this platform allows.
+///
+/// A system prompt where there is one to raise, and the settings pane where
+/// there is not. That covers both a platform that never prompts and a user who
+/// has already answered, since macOS shows its prompt only once. The order
+/// lives here rather than in a backend so that it is one rule on both
+/// platforms, the same as [`resolve_active_monitor`].
+pub fn request_microphone_permission() {
+    if backend::permissions::prompt_for_microphone() {
+        return;
+    }
+    open_microphone_settings();
+}
+
+/// Whether this platform withholds synthetic input behind a permission.
+///
+/// macOS does, through Accessibility. Windows does not, so onboarding has one
+/// fewer step there rather than a step that asks for nothing.
+#[must_use]
+pub const fn input_permission_required() -> bool {
+    backend::INPUT_PERMISSION_REQUIRED
 }
 
 /// Open the system settings page where permission to synthesise input is
@@ -546,6 +601,25 @@ mod tests {
             scale: 0.0,
         };
         assert_eq!(monitor_containing(&[broken], 100.0, 100.0, ScreenUnit::Logical), Some(0));
+    }
+
+    /// A platform that gates synthetic input has to be able to say where the
+    /// user goes to ungate it, or onboarding shows a step with no way out.
+    #[test]
+    fn a_platform_that_needs_input_permission_can_point_at_the_pane() {
+        assert_eq!(
+            input_permission_required(),
+            strings::INPUT_PERMISSION_SETTINGS_URL.is_some()
+        );
+    }
+
+    /// The microphone is not optional on any platform WhisperFree runs on, so
+    /// no backend may answer that there is nothing to grant. `Unknown` is the
+    /// honest answer where the OS will not say; `NotRequired` would be a lie
+    /// that hides the whole step.
+    #[test]
+    fn the_microphone_is_never_reported_as_needing_no_permission() {
+        assert_ne!(microphone_permission(), PermissionState::NotRequired);
     }
 
     #[test]
