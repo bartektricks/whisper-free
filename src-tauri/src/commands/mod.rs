@@ -115,6 +115,11 @@ pub fn update_settings(
             || current.refine_model_id != settings.refine_model_id
     };
 
+    let muting_switched_off = {
+        let current = ctx.settings.lock().map_err(lock_err)?;
+        current.mute_while_recording && !settings.mute_while_recording
+    };
+
     let path = crate::settings::settings_path(&ctx.data_dir);
     settings.save(&path).map_err(|e| {
         tracing::error!(error = %e, "could not save settings");
@@ -148,6 +153,15 @@ pub fn update_settings(
     // both directions happen off the command thread and only on a real change.
     if refiner_changed {
         crate::sync_refiner(&app);
+    }
+
+    // Someone who unticks this mid-recording means "now", not "after this
+    // one": nothing else publishes a state until the run ends, so without this
+    // the machine would stay quiet until then. Switching it *on* mid-recording
+    // is deliberately not honoured: the run started under the old answer, and
+    // un-muting is the direction that cannot surprise anyone.
+    if muting_switched_off {
+        ctx.mute.restore();
     }
 
     tracing::info!(event = "settings_updated");

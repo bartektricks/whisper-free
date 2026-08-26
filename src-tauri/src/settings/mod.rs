@@ -47,6 +47,16 @@ pub struct Settings {
     /// app that gives no sign it is recording reads as a broken hotkey.
     pub show_overlay: bool,
     pub overlay_anchor: OverlayAnchor,
+    /// Silence the rest of the machine while the microphone is open
+    /// (decision 0009).
+    ///
+    /// **Defaults to `true`, and that changes behaviour for existing
+    /// installs.** It is meant to: this is an opt-out, so a settings file
+    /// written before the feature existed has no such key and picks it up from
+    /// `Default` at the next launch. One checkbox in Settings › Audio turns it
+    /// off. Contrast `check_for_updates`, which is off by default because it
+    /// reaches the network; this one only touches a volume the user can see.
+    pub mute_while_recording: bool,
     /// Run transcriptions past a language model before pasting them
     /// (decision 0005). Off by default: it costs about a second per dictation
     /// and a second model in memory, and the loop works without it.
@@ -80,6 +90,7 @@ impl Default for Settings {
             start_at_login: false,
             show_overlay: true,
             overlay_anchor: OverlayAnchor::default(),
+            mute_while_recording: true,
             refine_enabled: false,
             refine_model_id: DEFAULT_REFINE_MODEL_ID.to_string(),
             check_for_updates: false,
@@ -202,6 +213,27 @@ mod tests {
         let path = settings_path(&dir);
         std::fs::write(&path, r#"{"hotkey":"Alt+D","start_at_login":true}"#).unwrap();
         assert!(Settings::load(&path).onboarding_completed);
+    }
+
+    /// The opposite of the rule above, and deliberately so: muting is an
+    /// opt-out, so a file written before it existed arrives with it switched
+    /// on rather than being grandfathered out of it.
+    #[test]
+    fn a_file_from_before_muting_gets_it_switched_on() {
+        let dir = temp_dir("pre-muting");
+        let path = settings_path(&dir);
+        std::fs::write(&path, r#"{"hotkey":"Alt+D","start_at_login":true}"#).unwrap();
+        assert!(Settings::load(&path).mute_while_recording);
+    }
+
+    /// And someone who has turned it off keeps it off, which is the whole
+    /// point of it being a setting.
+    #[test]
+    fn a_file_that_opts_out_of_muting_is_believed() {
+        let dir = temp_dir("opted-out-of-muting");
+        let path = settings_path(&dir);
+        std::fs::write(&path, r#"{"mute_while_recording":false}"#).unwrap();
+        assert!(!Settings::load(&path).mute_while_recording);
     }
 
     /// The other half of the same rule: once a first run has written the flag,

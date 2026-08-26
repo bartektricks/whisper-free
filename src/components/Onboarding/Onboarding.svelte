@@ -18,12 +18,20 @@
   import { models } from "../../stores/models";
   import WelcomeStep from "./WelcomeStep.svelte";
   import MicrophoneStep from "./MicrophoneStep.svelte";
+  import MutingStep from "./MutingStep.svelte";
   import AccessibilityStep from "./AccessibilityStep.svelte";
   import SpeechStep from "./SpeechStep.svelte";
   import CleanupStep from "./CleanupStep.svelte";
   import DoneStep from "./DoneStep.svelte";
 
-  type StepId = "welcome" | "microphone" | "accessibility" | "speech" | "cleanup" | "done";
+  type StepId =
+    | "welcome"
+    | "microphone"
+    | "muting"
+    | "accessibility"
+    | "speech"
+    | "cleanup"
+    | "done";
 
   /**
    * The accessibility step is dropped where the platform does not gate
@@ -36,6 +44,7 @@
       [
         { id: "welcome", label: "Welcome" },
         { id: "microphone", label: "Microphone" },
+        { id: "muting", label: "Other audio" },
         { id: "accessibility", label: "Pasting" },
         { id: "speech", label: "Speech model" },
         { id: "cleanup", label: "Cleanup" },
@@ -80,6 +89,10 @@
         return "Get started";
       case "microphone":
         return $permissions.microphone === "denied" ? "Skip for now" : "Continue";
+      // A preference rather than a task: it is answered whichever way the box
+      // is left, so there is nothing here to skip.
+      case "muting":
+        return "Continue";
       case "accessibility":
         return $permissions.accessibility === "granted" ? "Continue" : "Skip for now";
       case "speech":
@@ -132,6 +145,8 @@
       <WelcomeStep />
     {:else if step === "microphone"}
       <MicrophoneStep />
+    {:else if step === "muting"}
+      <MutingStep />
     {:else if step === "accessibility"}
       <AccessibilityStep />
     {:else if step === "speech"}

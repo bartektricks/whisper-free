@@ -24,6 +24,7 @@ cargo run --example mic_check 3                      # 3 s capture, prints durat
 cargo run --release --example pipeline_check a.wav   # installs model if missing, then model → ASR → dictionary
 cargo run --release --example pipeline_check -- --model canary-180m-flash --language de b.wav
 cargo run --release --example refine_check            # installs the cleanup model, then measures it
+cargo run --example mute_check 3                      # mutes the real output device for 3 s, then restores
 cargo tree -d | grep ort                              # must show one ort and one ort-sys, never two
 ```
 
@@ -167,6 +168,25 @@ between displays of different densities lands on the wrong one.
 overlay still cannot enter another app's full-screen Space, and that raising the
 level further does not fix it. See `docs/decisions/0004-dictation-overlay.md`.
 
+**Muting (`mute/`)** hushes the rest of the machine while the microphone is open
+(decision 0009). Structurally it is the overlay again: `mute::wants_silence` is a pure
+rule over the snapshot exactly as `overlay::wants_overlay` is, and `mute::apply` is called
+from `publish_state`. **That placement is load-bearing.** The obvious hook, beside
+`ctx.audio.stop()`, misses a path where that call never happens at all: an Escape arriving
+between `claim_finish` and `finish`'s `cancelled` check is caught by neither, so the
+stream is left open. Every path out of a recording does publish *something*, which is what
+makes `publish_state` the one place the restore cannot be missed. The mute lasts exactly
+`AppState::Recording`; transcription and the paste run with sound back on. `MuteEngine`
+owns the device on its own thread for the reason `AudioEngine` does (a Windows COM
+interface belongs to its apartment), and its sends carry no reply channel because
+`publish_state` may be running on the hotkey handler's thread; `restore_blocking` is the
+one exception and only the `RunEvent::Exit` arm uses it. Muting is advisory like
+refinement: no `AppState`, no error enum, and a device that will not go quiet is a debug
+line. `settings.mute_while_recording` defaults to **`true`**, so existing installs pick it
+up, which is the opposite of what `onboarding_completed` does; the reasoning for both is
+in decision 0009. The microphone test deliberately does not mute, which falls out of it
+never entering `AppState::Recording`.
+
 **Escape cancels a run.** It is registered only for the life of a dictation and
 released straight after, because a permanently registered Escape would swallow the
 key system-wide; `cancel_key_held` keeps the claim single-entry. Whether Escape stops
@@ -204,8 +224,10 @@ and resampling happen on stop.
 - `platform/` — application code calls the free functions and `platform::strings` consts in
   `platform/mod.rs`, and nothing else. `mod backend` is private and selected by
   `#[cfg_attr(target_os, path)]`, so `platform::macos::*` is unnameable from outside and a
-  backend missing any item of the contract fails to compile. Adding Linux is one directory
-  plus one `cfg_attr` line. See `docs/decisions/0002-cross-platform-platform-layer.md`.
+  backend missing any item of the contract fails to compile. `OutputMute` is the shape to
+  copy when a backend has to remember something: a public newtype over a private
+  `backend::` type, holdable from outside and inspectable only within. Adding Linux is one
+  directory plus one `cfg_attr` line. See `docs/decisions/0002-cross-platform-platform-layer.md`.
 
 **Models (`models/`)** are static `ModelDescriptor`s with per-file pinned SHA-256; nothing
 is bundled and nothing downloads without the user asking. Digests can be read from

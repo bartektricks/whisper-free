@@ -5,6 +5,7 @@
 //! `platform/mod.rs`.
 
 pub mod focus;
+pub mod output;
 pub mod permissions;
 pub mod replay;
 pub mod text;

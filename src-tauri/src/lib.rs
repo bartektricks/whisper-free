@@ -33,6 +33,7 @@ pub mod dictionary;
 pub mod hotkey;
 pub mod logging;
 pub mod models;
+pub mod mute;
 pub mod overlay;
 pub mod platform;
 pub mod refine;
@@ -66,6 +67,15 @@ pub struct AppContext {
     pub tray: Mutex<Option<TrayHandles>>,
     /// Owns the microphone on its own thread.
     pub audio: audio::AudioEngine,
+    /// Owns the output device on its own thread, so the rest of the machine
+    /// can be hushed while that microphone is open.
+    ///
+    /// A thread rather than a pair of functions because Windows reaches the
+    /// endpoint through COM, whose interfaces belong to the apartment that
+    /// created them, which is the same reason `cpal::Stream` has one. Every
+    /// send is fire and forget, since `publish_state` may be running on the
+    /// hotkey handler's thread.
+    pub mute: mute::MuteEngine,
     /// The loaded speech model, absent until one is installed and loaded.
     pub recognizer: Mutex<Option<Box<dyn asr::SpeechRecognizer>>>,
     /// The loaded refinement model. Absent whenever the feature is switched
@@ -175,6 +185,12 @@ pub fn fail_app_state(app: &AppHandle, message: impl Into<String>) {
 }
 
 fn publish_state(app: &AppHandle, ctx: &AppContext, snapshot: &StateSnapshot) {
+    // First, so the machine goes quiet as the recording begins rather than a
+    // beat after the overlay says it has. Every path out of a recording
+    // publishes something, which is what makes this the one place the restore
+    // cannot be missed.
+    mute::apply(ctx, snapshot);
+
     if let Ok(guard) = ctx.tray.lock() {
         if let Some(handles) = guard.as_ref() {
             let _ = handles.status.set_text(tray::status_text(snapshot));
@@ -550,6 +566,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         data_dir,
         tray: Mutex::new(Some(handles)),
         audio: audio::AudioEngine::spawn(),
+        mute: mute::MuteEngine::spawn(),
         recognizer: Mutex::new(None),
         refiner: Mutex::new(None),
         refiner_last_used: Mutex::new(None),
@@ -715,13 +732,22 @@ pub fn run() {
     // Nothing has been drawn yet at this point, so there is no window to report
     // into — the log is the only place a startup failure can be recorded.
     match app {
-        Ok(app) => app.run(|_, event| {
+        Ok(app) => app.run(|app, event| {
             // The activation the windowing layer asks for during launch is held
             // by macOS until the app first puts something on screen. For a
             // menu-bar app that is the tray menu, which the activation then
             // closes again — so it is settled here, while nothing is open.
             if matches!(event, RunEvent::Ready) {
                 platform::settle_launch_activation();
+            }
+
+            // Quitting mid-recording must not leave the machine silent, and
+            // managed state is not reliably dropped on the way out. Waiting is
+            // the point: a fire-and-forget send would race the teardown.
+            if matches!(event, RunEvent::Exit) {
+                if let Some(ctx) = app.try_state::<AppContext>() {
+                    ctx.mute.restore_blocking();
+                }
             }
         }),
         Err(e) => tracing::error!(error = %e, "WhisperFree could not start"),

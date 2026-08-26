@@ -73,6 +73,21 @@
   </Row>
 
   <Row
+    label="Other audio"
+    hint="No operating system lets one app mute another, so this mutes {systemName()} itself. Whatever you had playing comes back untouched the moment recording stops, and it is left alone if you had already muted it yourself."
+  >
+    <label class="checkbox">
+      <input
+        type="checkbox"
+        checked={$settings.mute_while_recording}
+        onchange={(e) =>
+          settings.update({ mute_while_recording: e.currentTarget.checked })}
+      />
+      Mute while recording
+    </label>
+  </Row>
+
+  <Row
     label="Test"
     hint="Records a few seconds and reports the level it heard. Nothing is saved."
   >
@@ -108,6 +123,12 @@
   h2 {
     font-size: 15px;
     margin-bottom: 4px;
+  }
+
+  .checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
   }
 
   .test {

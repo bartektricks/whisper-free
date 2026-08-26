@@ -43,6 +43,7 @@ export interface Settings {
   start_at_login: boolean;
   show_overlay: boolean;
   overlay_anchor: OverlayAnchor;
+  mute_while_recording: boolean;
   refine_enabled: boolean;
   refine_model_id: string;
   check_for_updates: boolean;
