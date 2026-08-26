@@ -22,6 +22,7 @@ cargo test                    # all unit tests (inline #[cfg(test)] modules)
 cargo test hold_to_talk       # one test or module by name substring
 cargo run --example mic_check 3                      # 3 s capture, prints duration/rate/peak
 cargo run --release --example pipeline_check a.wav   # installs model if missing, then model → ASR → dictionary
+cargo run --release --example pipeline_check -- --model canary-180m-flash --language de b.wav
 cargo run --release --example refine_check            # installs the cleanup model, then measures it
 cargo tree -d | grep ort                              # must show one ort and one ort-sys, never two
 ```
@@ -180,9 +181,14 @@ and resampling happen on stop.
 **Four load-bearing boundaries** (keep them intact):
 
 - `asr/` — outside this module the app only knows `audio -> transcription` via the
-  `SpeechRecognizer` trait. `asr/parakeet.rs` is the only file that may name
-  `transcribe-rs`, ONNX, quantisation, or chunk sizes. A second engine means a new
-  `EngineKind` variant and a new arm in `build_recognizer` (`lib.rs`), nothing else.
+  `SpeechRecognizer` trait. `asr/onnx.rs` is the only file that may name `transcribe-rs`,
+  ONNX, quantisation, or chunk sizes; `OnnxRecognizer` holds a `Box<dyn SpeechModel>` and
+  dispatches on `OnnxEngine`, so another model in a family already supported is a
+  `ModelDescriptor` and nothing else. A new *family* is one `OnnxEngine` variant, one
+  `EngineKind` variant, and one arm in `build_recognizer` (`lib.rs`). Chunk sizes belong
+  to the engine (`Chunking`), not the module: decision 0001's numbers were measured for
+  Parakeet and Canary only inherits them. See
+  `docs/decisions/0008-a-second-speech-model-and-language-choice.md`.
 - `refine/` — outside this module the app only knows `text -> text`, via the
   `TextRefiner` trait. `refine/onnx.rs` is the only file that may name `ort`,
   `tokenizers`, a KV cache, or a graph input name. `refine/guard.rs` and
@@ -202,9 +208,19 @@ and resampling happen on stop.
   plus one `cfg_attr` line. See `docs/decisions/0002-cross-platform-platform-layer.md`.
 
 **Models (`models/`)** are static `ModelDescriptor`s with per-file pinned SHA-256; nothing
-is bundled and nothing downloads without the user asking. `download_model` returns
+is bundled and nothing downloads without the user asking. Digests can be read from
+HuggingFace's tree API without downloading — the LFS `oid` is the SHA-256 — but a file not
+stored in LFS (`vocab.txt`) has to be fetched and hashed. `ModelFile.base_url` overrides
+the descriptor's for one file: Canary needs Parakeet's `nemo128.onnx` preprocessor and its
+own repository does not ship one. `download_model` returns
 immediately and the worker thread emits `model_download_progress` /
 `model_download_completed` / `model_download_failed`, then reloads the recogniser.
+`load_installed_model` is that reload and is also what a change of `settings.model_id`
+calls, from `update_settings`: nothing else swaps the recogniser, and one left over from
+the previous choice answers under the new settings, which is how a language pinned for
+Canary reached Parakeet and was refused. It drops the loaded model before loading the
+next, so the peak stays at one model and a model that is chosen but not installed leaves
+the app `Uninitialized` rather than quietly dictating with the old one.
 
 **Text insertion (`text_insertion/`, `platform/*/text.rs`)** is clipboard + a synthetic
 paste — no per-app integrations, by design. The previous clipboard is restored after a
@@ -261,8 +277,16 @@ denied in it. `src/overlay/` must not import `app.css`: it paints `body` opaque.
   whether the change is right; a wrong substitution scores the same as a right one, which
   is why the stage is opt-in and the dictionary still runs after it. Never make
   refinement able to fail a dictation.
-- Parakeet v3 detects language but cannot be pinned, hence two separate `Capability`
-  values; `LanguageSelection::Fixed` is refused up front rather than silently ignored.
+- **Parakeet detects a language and cannot be pinned; Canary is pinned and cannot
+  detect.** Hence two separate `Capability` values, and `check_language_request` refuses a
+  mismatch up front rather than silently ignoring it. Because one `settings.language`
+  serves both, `models::normalise_language` maps a selection onto the nearest thing the
+  chosen model can honour, and `update_settings` runs it on every save — it is pure, a
+  fixed point, and its output is tested never to be something `check_language_request`
+  would refuse. Getting this wrong is not a visible error: Canary given the wrong source
+  language *translates* into it, fluently. A model's declared languages are the ones
+  measured to work, not the ones its model card lists — Canary 180M Flash claims Spanish
+  and returns an empty string for it. See decision 0008.
 - Closing the settings window hides it — a tray app must not quit on window close
   (`on_window_event` in `lib.rs`).
 - **The overlay is never focused, and `set_focus` is never called on it.** Insertion

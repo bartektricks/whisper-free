@@ -8,6 +8,14 @@
 //! connection the first time.
 //!
 //! Run with: `cargo run --release --example pipeline_check <file.wav>...`
+//!
+//! Defaults to Parakeet with automatic language detection. To drive another
+//! model, or a model that has to be told what it is listening to:
+//!
+//! ```sh
+//! cargo run --release --example pipeline_check -- \
+//!     --model canary-180m-flash --language en clip.wav
+//! ```
 
 // A developer diagnostic, not shipped code. Parsing a WAV header is byte
 // indexing and integer arithmetic by nature, and a command-line tool reports a
@@ -25,7 +33,10 @@
 
 use std::path::PathBuf;
 
-use whisper_free_lib::asr::{AudioBuffer, SpeechRecognizer, TranscriptionOptions};
+use whisper_free_lib::asr::onnx::{OnnxEngine, OnnxRecognizer};
+use whisper_free_lib::asr::{
+    AudioBuffer, LanguageSelection, SpeechRecognizer, TranscriptionOptions,
+};
 use whisper_free_lib::dictionary::Dictionary;
 use whisper_free_lib::models::{download, ModelStore};
 
@@ -101,48 +112,107 @@ fn read_wav(path: &PathBuf) -> Result<AudioBuffer, String> {
     Ok(AudioBuffer::new(samples, rate))
 }
 
-fn main() {
-    let files: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
-    if files.is_empty() {
-        eprintln!("usage: pipeline_check <file.wav>...");
-        std::process::exit(2);
-    }
+struct Args {
+    files: Vec<PathBuf>,
+    model_id: String,
+    language: Option<String>,
+}
 
-    let store = ModelStore::new(&data_dir());
-    let descriptor = whisper_free_lib::models::find("parakeet-tdt-0.6b-v3").unwrap();
+fn parse_args() -> Args {
+    let mut args = Args {
+        files: Vec::new(),
+        model_id: "parakeet-tdt-0.6b-v3".to_string(),
+        language: None,
+    };
 
-    println!("Model store: {}", store.root().display());
-    if store.is_installed(descriptor) {
-        println!("Model already installed.\n");
-    } else {
-        println!(
-            "Installing {} ({:.0} MB missing)...",
-            descriptor.name,
-            (descriptor.total_bytes() - store.bytes_on_disk(descriptor)) as f64 / 1e6
-        );
-        let cancel = download::CancelFlag::new();
-        let mut last_pct = -1i64;
-        let result = download::install(&store, descriptor, &cancel, |p| {
-            let pct = (p.fraction() * 100.0) as i64;
-            if pct != last_pct {
-                last_pct = pct;
-                println!("  {pct:3}%  {}", p.file);
-            }
-        });
-        match result {
-            Ok(()) => println!("Installed and every file verified against its SHA-256.\n"),
-            Err(e) => {
-                eprintln!("install failed: {e}");
-                std::process::exit(1);
-            }
+    let mut raw = std::env::args().skip(1);
+    while let Some(arg) = raw.next() {
+        match arg.as_str() {
+            "--model" => args.model_id = raw.next().unwrap_or_default(),
+            "--language" => args.language = raw.next(),
+            _ => args.files.push(PathBuf::from(arg)),
         }
     }
 
-    let mut recognizer = whisper_free_lib::asr::parakeet::ParakeetRecognizer::new(
+    if args.files.is_empty() {
+        eprintln!("usage: pipeline_check [--model <id>] [--language <code>] <file.wav>...");
+        eprintln!("\nmodels:");
+        for m in whisper_free_lib::models::of_kind(whisper_free_lib::models::ModelKind::Speech) {
+            eprintln!("  {:<20} {}", m.id, m.name);
+        }
+        std::process::exit(2);
+    }
+    args
+}
+
+fn install_if_missing(store: &ModelStore, descriptor: &whisper_free_lib::models::ModelDescriptor) {
+    if store.is_installed(descriptor) {
+        println!("Model already installed.\n");
+        return;
+    }
+
+    println!(
+        "Installing {} ({:.0} MB missing)...",
+        descriptor.name,
+        (descriptor.total_bytes() - store.bytes_on_disk(descriptor)) as f64 / 1e6
+    );
+    let cancel = download::CancelFlag::new();
+    let mut last_pct = -1i64;
+    let result = download::install(store, descriptor, &cancel, |p| {
+        let pct = (p.fraction() * 100.0) as i64;
+        if pct != last_pct {
+            last_pct = pct;
+            println!("  {pct:3}%  {}", p.file);
+        }
+    });
+    match result {
+        Ok(()) => println!("Installed and every file verified against its SHA-256.\n"),
+        Err(e) => {
+            eprintln!("install failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn main() {
+    let Args {
+        files,
+        model_id,
+        language,
+    } = parse_args();
+
+    let store = ModelStore::new(&data_dir());
+    let Some(descriptor) = whisper_free_lib::models::find(&model_id) else {
+        eprintln!("unknown model \"{model_id}\"");
+        std::process::exit(2);
+    };
+
+    // The same rule Settings applies, so the example cannot ask a model for
+    // something the app would never ask it for.
+    let selection = whisper_free_lib::models::normalise_language(
+        descriptor,
+        language.map_or(LanguageSelection::Auto, LanguageSelection::Fixed),
+    );
+    println!("Language: {selection:?}");
+
+    println!("Model store: {}", store.root().display());
+    install_if_missing(&store, descriptor);
+
+    let engine = match descriptor.engine {
+        whisper_free_lib::models::EngineKind::Parakeet => OnnxEngine::Parakeet,
+        whisper_free_lib::models::EngineKind::Canary => OnnxEngine::Canary,
+        whisper_free_lib::models::EngineKind::RefinerOnnx => {
+            eprintln!("{} is a cleanup model and cannot transcribe", descriptor.id);
+            std::process::exit(2);
+        }
+    };
+    let mut recognizer = OnnxRecognizer::new(
         descriptor.id,
+        engine,
         store.dir_for(descriptor.id),
         descriptor.languages(),
         descriptor.capabilities.to_vec(),
+        descriptor.files.iter().map(|f| f.name.to_string()).collect(),
     );
 
     let started = std::time::Instant::now();
@@ -167,7 +237,10 @@ fn main() {
             }
         };
 
-        match recognizer.transcribe(&audio, &TranscriptionOptions::default()) {
+        let options = TranscriptionOptions {
+            language: selection.clone(),
+        };
+        match recognizer.transcribe(&audio, &options) {
             Ok(t) => {
                 println!("{}", path.display());
                 println!(

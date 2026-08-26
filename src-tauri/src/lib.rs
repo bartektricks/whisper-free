@@ -196,18 +196,22 @@ fn build_recognizer(
     descriptor: &models::ModelDescriptor,
     model_dir: PathBuf,
 ) -> Option<Box<dyn asr::SpeechRecognizer>> {
-    match descriptor.engine {
-        models::EngineKind::Parakeet => Some(Box::new(asr::parakeet::ParakeetRecognizer::new(
-            descriptor.id,
-            model_dir,
-            descriptor.languages(),
-            descriptor.capabilities.to_vec(),
-        ))),
+    let engine = match descriptor.engine {
+        models::EngineKind::Parakeet => asr::onnx::OnnxEngine::Parakeet,
+        models::EngineKind::Canary => asr::onnx::OnnxEngine::Canary,
         // A refinement model cannot transcribe. Unreachable through Settings,
         // which only offers `ModelKind::Speech` here, but returning nothing
         // beats a hand-edited settings.json taking the app down.
-        models::EngineKind::RefinerOnnx => None,
-    }
+        models::EngineKind::RefinerOnnx => return None,
+    };
+    Some(Box::new(asr::onnx::OnnxRecognizer::new(
+        descriptor.id,
+        engine,
+        model_dir,
+        descriptor.languages(),
+        descriptor.capabilities.to_vec(),
+        descriptor.files.iter().map(|f| f.name.to_string()).collect(),
+    )))
 }
 
 /// Build a refiner for a model descriptor.
@@ -226,7 +230,7 @@ fn build_refiner(
             // derails it. See `refine::prompt::Template`.
             refine::Template::ChatMl,
         ))),
-        models::EngineKind::Parakeet => None,
+        models::EngineKind::Parakeet | models::EngineKind::Canary => None,
     }
 }
 
@@ -379,8 +383,17 @@ pub fn sync_refiner(app: &AppHandle) {
     }
 }
 
-/// Load the configured model in the background, moving the app to `Ready` when
-/// it succeeds. Does nothing if the model is not installed.
+/// Load the configured speech model in the background, moving the app to
+/// `Ready` when it succeeds.
+///
+/// The mirror of [`sync_refiner`], and called for the same three reasons: at
+/// startup, after a download completes, and whenever the setting changes.
+/// Changing model is a swap rather than an addition, so whatever is loaded is
+/// dropped first. That is not just about the peak, which two ONNX sessions
+/// would put close to two gigabytes: a recogniser outlives the setting that
+/// chose it, and one left behind answers for a model the user has stopped
+/// asking for. Pinning a language for Canary while Parakeet is still the
+/// loaded copy is exactly that, and Parakeet refuses to be pinned.
 pub fn load_installed_model(app: &AppHandle) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -395,15 +408,55 @@ pub fn load_installed_model(app: &AppHandle) {
                 Err(_) => return,
             };
 
-            let Some(descriptor) = models::find(&model_id) else {
-                tracing::warn!(model_id = %model_id, "configured model is not in the registry");
-                return;
-            };
-
-            if !ctx.models.is_installed(descriptor) {
-                tracing::info!(event = "model_not_installed", model_id = %model_id);
+            // Already the loaded one: reloading would cost a second and free
+            // nothing. This is what makes the call after a download a no-op
+            // for the model that was not the one downloaded.
+            if ctx
+                .recognizer
+                .lock()
+                .is_ok_and(|g| g.as_ref().is_some_and(|r| r.model_id() == model_id.as_str()))
+            {
                 return;
             }
+
+            // Resolved before anything is dropped, because the answer decides
+            // whether there is a model to load at all, not what happens to the
+            // one already loaded. That is settled either way.
+            let wanted = match models::find(&model_id) {
+                Some(descriptor) if ctx.models.is_installed(descriptor) => Some(descriptor),
+                Some(_) => {
+                    tracing::info!(event = "model_not_installed", model_id = %model_id);
+                    None
+                }
+                None => {
+                    tracing::warn!(model_id = %model_id, "configured model is not in the registry");
+                    None
+                }
+            };
+
+            // Transcription holds this lock for its whole run, so a swap
+            // requested mid-dictation waits for it rather than pulling the
+            // model out from under one.
+            let dropped = {
+                let Ok(mut guard) = ctx.recognizer.lock() else {
+                    return;
+                };
+                if let Some(recognizer) = guard.as_mut() {
+                    recognizer.unload();
+                }
+                guard.take().is_some()
+            };
+            if dropped {
+                tracing::info!(event = "recognizer_unloaded");
+                // Honest about the gap: dictation is not possible again until
+                // the load below finishes, or at all if there is nothing to
+                // load.
+                set_app_state(&app, AppState::Uninitialized);
+            }
+
+            let Some(descriptor) = wanted else {
+                return;
+            };
 
             let Some(mut recognizer) =
                 build_recognizer(descriptor, ctx.models.dir_for(descriptor.id))

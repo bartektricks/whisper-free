@@ -87,10 +87,20 @@ export interface Language {
   name: string;
 }
 
-/** Mirrors `models::ModelInfo`. */
 /** Mirrors `models::ModelKind`. */
 export type ModelKind = "speech" | "refiner";
 
+/** Mirrors `asr::types::Capability`. */
+export type Capability =
+  /** Detects the spoken language on its own. */
+  | "language_detection"
+  /** Honours a caller-specified language. */
+  | "language_selection"
+  | "punctuation"
+  | "timestamps"
+  | "streaming";
+
+/** Mirrors `models::ModelInfo`. */
 export interface ModelInfo {
   id: string;
   name: string;
@@ -98,6 +108,7 @@ export interface ModelInfo {
   kind: ModelKind;
   size_bytes: number;
   languages: Language[];
+  capabilities: Capability[];
   installed: boolean;
   bytes_on_disk: number;
 }

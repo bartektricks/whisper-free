@@ -134,7 +134,9 @@ pub fn install(
             continue;
         }
 
-        let url = format!("{}/{}", descriptor.base_url, file.remote);
+        // Per file, not per model: Canary's preprocessor comes from a
+        // different repository to the rest of it.
+        let url = file.url(descriptor.base_url);
         download_one(
             &url,
             &target,
