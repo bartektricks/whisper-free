@@ -49,6 +49,24 @@ pub fn update_settings(
     ctx: State<'_, AppContext>,
     settings: Settings,
 ) -> CommandResult<Settings> {
+    // Models disagree about what choosing a language means, and this is the
+    // one place `model_id` changes: a user who switches from Parakeet to
+    // Canary has asked for detection from a model that cannot detect, and
+    // saving that verbatim would leave every dictation failing a capability
+    // check. See `models::normalise_language`.
+    let mut settings = settings;
+    if let Some(descriptor) = crate::models::find(&settings.model_id) {
+        let normalised = crate::models::normalise_language(descriptor, settings.language.clone());
+        if normalised != settings.language {
+            tracing::info!(
+                event = "language_selection_normalised",
+                model_id = %settings.model_id
+            );
+            settings.language = normalised;
+        }
+    }
+    let settings = settings;
+
     // The shortcut has to be claimed from the OS before it is persisted —
     // otherwise a taken shortcut would be saved and silently do nothing.
     let previous_hotkey = ctx.settings.lock().map_err(lock_err)?.hotkey.clone();
@@ -86,6 +104,11 @@ pub fn update_settings(
             || current.overlay_anchor != settings.overlay_anchor
     };
 
+    let model_changed = {
+        let current = ctx.settings.lock().map_err(lock_err)?;
+        current.model_id != settings.model_id
+    };
+
     let refiner_changed = {
         let current = ctx.settings.lock().map_err(lock_err)?;
         current.refine_enabled != settings.refine_enabled
@@ -110,6 +133,15 @@ pub fn update_settings(
     if overlay_changed {
         let snapshot = ctx.state.lock().map_err(lock_err)?.snapshot();
         crate::overlay::apply(&app, ctx.inner(), &snapshot);
+    }
+
+    // Nothing else swaps the recogniser, so without this the newly chosen
+    // model is only the one the app uses after a restart, and until then every
+    // dictation goes to the old one under the new settings. Choosing Canary
+    // and pinning a language is the visible case: Parakeet is still loaded, it
+    // cannot be pinned, and it says so instead of transcribing.
+    if model_changed {
+        crate::load_installed_model(&app);
     }
 
     // Loading is a second or so and unloading frees most of a gigabyte, so

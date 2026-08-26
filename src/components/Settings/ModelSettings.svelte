@@ -1,8 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { models } from "../../stores/models";
+  import { settings } from "../../stores/settings";
   import { formatBytes, summariseLanguages } from "../../lib/format";
   import type { ModelInfo } from "../../types";
+
+  // With one model of each kind this was obvious. With several it is not, and
+  // Remove is right next to it.
+  function inUse(model: ModelInfo): boolean {
+    return model.kind === "speech"
+      ? model.id === $settings.model_id
+      : model.id === $settings.refine_model_id;
+  }
 
   const speech = $derived($models.models.filter((m) => m.kind === "speech"));
   const refiners = $derived($models.models.filter((m) => m.kind === "refiner"));
@@ -24,7 +33,12 @@
     <article class="model">
       <div class="head">
         <div>
-          <h3>{model.name}</h3>
+          <h3>
+            {model.name}
+            {#if model.installed && inUse(model)}
+              <span class="badge">In use</span>
+            {/if}
+          </h3>
           <p class="meta">
             {#if model.languages.length > 0}
               {summariseLanguages(model.languages)} ·
@@ -91,6 +105,17 @@
   h2 {
     font-size: 15px;
     margin-bottom: 4px;
+  }
+
+  .badge {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 500;
+    vertical-align: middle;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
   }
 
   h3 {
