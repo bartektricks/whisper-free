@@ -8,6 +8,7 @@
   import AudioSettings from "./components/Settings/AudioSettings.svelte";
   import SpeechSettings from "./components/Settings/SpeechSettings.svelte";
   import DictionarySettings from "./components/Settings/DictionarySettings.svelte";
+  import HistorySettings from "./components/Settings/HistorySettings.svelte";
   import ModelSettings from "./components/Settings/ModelSettings.svelte";
   import CleanupSettings from "./components/Settings/CleanupSettings.svelte";
   import UpdateSettings from "./components/Settings/UpdateSettings.svelte";
@@ -22,6 +23,7 @@
     { id: "speech", label: "Speech" },
     { id: "cleanup", label: "Cleanup" },
     { id: "dictionary", label: "Dictionary" },
+    { id: "history", label: "History" },
     { id: "models", label: "Models" },
     { id: "updates", label: "Updates" },
   ] as const;
@@ -92,6 +94,8 @@
         <CleanupSettings />
       {:else if active === "dictionary"}
         <DictionarySettings />
+      {:else if active === "history"}
+        <HistorySettings />
       {:else if active === "models"}
         <ModelSettings />
       {:else if active === "updates"}

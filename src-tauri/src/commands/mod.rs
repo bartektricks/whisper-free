@@ -6,9 +6,11 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::audio::AudioDevice;
 use crate::dictionary::{Dictionary, DictionaryEntry};
+use crate::history::{History, HistoryEntry};
 use crate::models::download::CancelFlag;
 use crate::models::{ModelError, ModelInfo};
 use crate::platform::PermissionState;
@@ -120,6 +122,16 @@ pub fn update_settings(
         current.mute_while_recording && !settings.mute_while_recording
     };
 
+    // What has to happen to what is already kept, decided before the new
+    // settings are written so the old answer is still readable.
+    let history_change = {
+        let current = ctx.settings.lock().map_err(lock_err)?;
+        HistoryChange {
+            switched_off: current.history_enabled && !settings.history_enabled,
+            retention_changed: current.history_retention != settings.history_retention,
+        }
+    };
+
     let path = crate::settings::settings_path(&ctx.data_dir);
     settings.save(&path).map_err(|e| {
         tracing::error!(error = %e, "could not save settings");
@@ -164,9 +176,63 @@ pub fn update_settings(
         ctx.mute.restore();
     }
 
+    apply_history_change(&ctx, &settings, history_change)?;
+
     tracing::info!(event = "settings_updated");
     let _ = app.emit_to_all("settings_changed", &settings);
     Ok(settings)
+}
+
+/// What a settings save has to do to the history that already exists.
+#[derive(Clone, Copy)]
+struct HistoryChange {
+    switched_off: bool,
+    retention_changed: bool,
+}
+
+/// Make the kept history match the settings just saved (decision 0011).
+///
+/// Switching the feature off, or moving to a retention that does not persist,
+/// takes the file with it. Anything else that shortens the window prunes
+/// immediately rather than at the next launch: a user who has just chosen
+/// "24 hours" is entitled to see the older entries go now.
+fn apply_history_change(
+    ctx: &AppContext,
+    settings: &Settings,
+    change: HistoryChange,
+) -> CommandResult<()> {
+    let keeps_on_disk = settings.history_enabled && settings.history_retention.persists();
+
+    if !keeps_on_disk {
+        History::forget_on_disk(&crate::history::history_path(&ctx.data_dir)).map_err(|e| {
+            tracing::error!(error = %e, "could not remove the history file");
+            e.user_message()
+        })?;
+    }
+
+    // Emptying the list as well as the file, so switching the feature off is
+    // not merely cosmetic until the next restart.
+    if change.switched_off {
+        ctx.history.lock().map_err(lock_err)?.clear();
+        return Ok(());
+    }
+
+    if change.retention_changed {
+        let mut history = ctx.history.lock().map_err(lock_err)?;
+        let dropped = history.prune(settings.history_retention, crate::history::now());
+        if dropped > 0 {
+            tracing::info!(event = "history_pruned", dropped);
+        }
+        let saved = if keeps_on_disk {
+            persist_history(ctx, &history)
+        } else {
+            Ok(())
+        };
+        drop(history);
+        saved?;
+    }
+
+    Ok(())
 }
 
 /// Release the hotkey while the user records a new one.
@@ -502,6 +568,107 @@ fn persist_dictionary(ctx: &AppContext, dictionary: &Dictionary) -> CommandResul
     let path = crate::dictionary::dictionary_path(&ctx.data_dir);
     dictionary.save(&path).map_err(|e| {
         tracing::error!(error = %e, "could not save the dictionary");
+        e.user_message()
+    })
+}
+
+/// What has been dictated and kept (decision 0011).
+///
+/// Pruned on the way out as well as at launch, so a window that has been open
+/// since yesterday does not go on offering entries that have aged past the
+/// retention.
+///
+/// # Errors
+///
+/// When a lock is poisoned.
+#[tauri::command]
+pub fn get_history(ctx: State<'_, AppContext>) -> CommandResult<Vec<HistoryEntry>> {
+    let retention = {
+        let settings = ctx.settings.lock().map_err(lock_err)?;
+        if !settings.history_enabled {
+            return Ok(Vec::new());
+        }
+        settings.history_retention
+    };
+    let mut history = ctx.history.lock().map_err(lock_err)?;
+    if history.prune(retention, crate::history::now()) > 0 && retention.persists() {
+        persist_history(&ctx, &history)?;
+    }
+    Ok(history.entries.clone())
+}
+
+/// Put one kept transcription back on the clipboard.
+///
+/// A command rather than the clipboard plugin's JS half, for the reason the
+/// rest of the app is shaped this way: Rust owns the clipboard, and the
+/// settings window holds no clipboard capability.
+///
+/// # Errors
+///
+/// When no entry has that id, a lock is poisoned, or the clipboard refuses.
+#[tauri::command]
+pub fn copy_history_entry(ctx: State<'_, AppContext>, app: AppHandle, id: u64) -> CommandResult<()> {
+    let history = ctx.history.lock().map_err(lock_err)?;
+    let text = history
+        .text_of(id)
+        .ok_or_else(|| crate::history::HistoryError::NotFound(id).user_message())?
+        .to_owned();
+    // Dropped before touching the clipboard: the write is someone else's code
+    // and has no business running under this lock.
+    drop(history);
+
+    app.clipboard().write_text(text).map_err(|e| {
+        tracing::warn!(error = %e, "could not copy a history entry");
+        "That transcription could not be copied to the clipboard.".to_owned()
+    })
+}
+
+/// # Errors
+///
+/// When no entry has that id, a lock is poisoned, or the file cannot be saved.
+#[tauri::command]
+pub fn delete_history_entry(ctx: State<'_, AppContext>, id: u64) -> CommandResult<Vec<HistoryEntry>> {
+    let mut history = ctx.history.lock().map_err(lock_err)?;
+    history.remove(id).map_err(|e| e.user_message())?;
+    persist_history_if_kept(&ctx, &history)?;
+    Ok(history.entries.clone())
+}
+
+/// Empty the history, and take the file with it.
+///
+/// The file is removed rather than rewritten empty: a user who clears their
+/// history means the disk, not just the list on screen.
+///
+/// # Errors
+///
+/// When a lock is poisoned or the file cannot be removed.
+#[tauri::command]
+pub fn clear_history(ctx: State<'_, AppContext>) -> CommandResult<Vec<HistoryEntry>> {
+    let mut history = ctx.history.lock().map_err(lock_err)?;
+    history.clear();
+    History::forget_on_disk(&crate::history::history_path(&ctx.data_dir)).map_err(|e| {
+        tracing::error!(error = %e, "could not remove the history file");
+        e.user_message()
+    })?;
+    Ok(history.entries.clone())
+}
+
+/// Save the history, but only when the current retention keeps it on disk.
+fn persist_history_if_kept(ctx: &AppContext, history: &History) -> CommandResult<()> {
+    let keeps = {
+        let settings = ctx.settings.lock().map_err(lock_err)?;
+        settings.history_enabled && settings.history_retention.persists()
+    };
+    if keeps {
+        persist_history(ctx, history)?;
+    }
+    Ok(())
+}
+
+fn persist_history(ctx: &AppContext, history: &History) -> CommandResult<()> {
+    let path = crate::history::history_path(&ctx.data_dir);
+    history.save(&path).map_err(|e| {
+        tracing::error!(error = %e, "could not save the history");
         e.user_message()
     })
 }

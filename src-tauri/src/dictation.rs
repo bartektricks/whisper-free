@@ -5,14 +5,13 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::asr::{AsrError, TranscriptionOptions};
 use crate::hotkey::chord::{classify, ChordStep};
 use crate::hotkey::{decide, HotkeyAction, HotkeyEvent, Shortcut, CHORD_TIMEOUT};
 use crate::refine;
 use crate::state::AppState;
-use crate::text_insertion::ClipboardOutcome;
 use crate::{fail_app_state, set_app_state, AppContext};
 
 /// Entry point for every hotkey transition.
@@ -583,20 +582,29 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
 fn insert(app: &AppHandle, ctx: &AppContext, final_text: &str) {
     set_app_state(app, AppState::Inserting);
 
-    match ctx.inserter.insert(final_text) {
+    // Read once, before the paste. A settings change landing mid-insertion
+    // should govern the next dictation, not change what this one does halfway.
+    let keep_on_clipboard = ctx
+        .settings
+        .lock()
+        .is_ok_and(|settings| settings.keep_on_clipboard);
+
+    match ctx.inserter.insert(final_text, keep_on_clipboard) {
         Ok(outcome) => {
             tracing::info!(
                 event = "text_inserted",
                 chars = final_text.chars().count(),
                 clipboard = ?outcome.clipboard
             );
-            // The user's clipboard held something we could not put back. Better
-            // to say so than to let them discover it later.
-            if outcome.clipboard == ClipboardOutcome::NonTextReplaced {
-                fail_app_state(
-                    app,
-                    "Text inserted. Your clipboard held an image, which could not be restored.",
-                );
+            remember(app, ctx, final_text);
+            // Only a clipboard that could not be put back at all is worth
+            // interrupting anyone over. `PartlyRestored` is deliberately not:
+            // the flavour that could not be read is nearly always one macOS
+            // derives from another (plain text from RTF, TIFF from PNG), and
+            // it reappears by itself once the flavour it comes from is back.
+            // Reporting it would be the false alarm decision 0010 removed.
+            if outcome.clipboard.lost_the_clipboard() {
+                fail_app_state(app, "Text inserted, but your clipboard could not be put back.");
                 return;
             }
             set_app_state(app, AppState::Ready);
@@ -606,6 +614,47 @@ fn insert(app: &AppHandle, ctx: &AppContext, final_text: &str) {
             fail_app_state(app, e.user_message());
         }
     }
+}
+
+/// Keep what was just inserted, if the user has asked us to (decision 0011).
+///
+/// Advisory in the same sense refinement is: a poisoned lock or a disk that
+/// will not take the file is a log line, never a failed dictation. The words
+/// are already in the user's document by the time this runs, and losing the
+/// copy of them matters less than telling them their dictation failed when it
+/// did not.
+///
+/// The text itself is never logged, here or anywhere.
+fn remember(app: &AppHandle, ctx: &AppContext, final_text: &str) {
+    let Ok(settings) = ctx.settings.lock() else {
+        tracing::error!("settings lock poisoned; the transcription was not kept");
+        return;
+    };
+    if !settings.history_enabled {
+        return;
+    }
+    let retention = settings.history_retention;
+    drop(settings);
+
+    let Ok(mut history) = ctx.history.lock() else {
+        tracing::error!("history lock poisoned; the transcription was not kept");
+        return;
+    };
+    history.record(final_text, crate::history::now());
+    history.prune(retention, crate::history::now());
+
+    // `Session` keeps the list and writes nothing, which is the whole of what
+    // choosing it means.
+    if retention.persists() {
+        if let Err(e) = history.save(&crate::history::history_path(&ctx.data_dir)) {
+            tracing::warn!(error = %e, "could not save the history");
+        }
+    }
+    let count = history.entries.len();
+    drop(history);
+
+    tracing::info!(event = "transcription_kept", entries = count);
+    let _ = app.emit(crate::EVENT_HISTORY_CHANGED, ());
 }
 
 /// Run the transcription past the refinement model, if one is switched on and

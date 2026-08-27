@@ -15,6 +15,9 @@ const DEFAULTS: Settings = {
   refine_enabled: false,
   refine_model_id: "qwen2.5-0.5b-instruct",
   check_for_updates: false,
+  keep_on_clipboard: false,
+  history_enabled: false,
+  history_retention: "seven_days",
   // True, like the Rust default, and for the same reason: the onboarding
   // takeover is keyed off this, and a `false` here would flash setup over the
   // settings window for the moment before `load()` returns.

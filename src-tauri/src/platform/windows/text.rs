@@ -62,13 +62,22 @@ impl TextInserter for Inserter {
         // input, and no settings page to open.
     }
 
-    fn insert(&self, text: &str) -> Result<InsertOutcome, InsertError> {
+    fn insert(
+        &self,
+        text: &str,
+        keep_on_clipboard: bool,
+    ) -> Result<InsertOutcome, InsertError> {
         let clipboard = self.app.clipboard();
 
-        // Remember what was there. A read failure is not necessarily an empty
-        // clipboard — it may hold an image or files, which we cannot preserve.
-        let previous = clipboard.read_text().ok();
-        let had_non_text = previous.is_none() && clipboard.read_image().is_ok();
+        // Every format, not just the text: what a user copies out of a
+        // spreadsheet or a design tool is several formats of one thing, and
+        // putting back only the text would discard the rest. Taking the
+        // snapshot is also what renders formats the owner had only advertised
+        // (decision 0010).
+        // Nothing is captured when the user has asked to keep the
+        // transcription: the snapshot exists to be put back, and reading every
+        // format costs real work for something about to be discarded.
+        let previous = (!keep_on_clipboard).then(super::clipboard::capture);
 
         clipboard
             .write_text(text)
@@ -80,17 +89,17 @@ impl TextInserter for Inserter {
 
         std::thread::sleep(PASTE_SETTLE);
 
-        let outcome = match previous {
-            Some(previous) => match clipboard.write_text(previous) {
-                Ok(()) => ClipboardOutcome::Restored,
-                Err(e) => {
-                    tracing::warn!(error = %e, "could not restore the clipboard");
-                    ClipboardOutcome::RestoreFailed
-                }
-            },
-            None if had_non_text => ClipboardOutcome::NonTextReplaced,
-            None => ClipboardOutcome::NothingToRestore,
-        };
+        let outcome = previous.map_or(ClipboardOutcome::Kept, |previous| {
+            let restored = super::clipboard::restore(&previous);
+            if let Err(e) = &restored {
+                tracing::warn!(error = %e, "could not restore the clipboard");
+            }
+            ClipboardOutcome::after_restore(
+                restored.is_ok(),
+                previous.is_empty(),
+                previous.is_incomplete(),
+            )
+        });
 
         Ok(InsertOutcome { clipboard: outcome })
     }

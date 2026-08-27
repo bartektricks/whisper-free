@@ -22,6 +22,7 @@
   import AccessibilityStep from "./AccessibilityStep.svelte";
   import SpeechStep from "./SpeechStep.svelte";
   import CleanupStep from "./CleanupStep.svelte";
+  import TextStep from "./TextStep.svelte";
   import DoneStep from "./DoneStep.svelte";
 
   type StepId =
@@ -31,6 +32,7 @@
     | "accessibility"
     | "speech"
     | "cleanup"
+    | "text"
     | "done";
 
   /**
@@ -48,6 +50,7 @@
         { id: "accessibility", label: "Pasting" },
         { id: "speech", label: "Speech model" },
         { id: "cleanup", label: "Cleanup" },
+        { id: "text", label: "Your text" },
         { id: "done", label: "Done" },
       ] as const
     ).filter(
@@ -69,10 +72,10 @@
   const refineModel = $derived(
     $models.models.find((m) => m.id === $settings.refine_model_id),
   );
-  const downloading = $derived(
-    Boolean(speechModel && $models.progress[speechModel.id]) ||
-      Boolean(refineModel && $models.progress[refineModel.id]),
-  );
+  // Any download, not just the two chosen ones: the speech step lets a user
+  // start one model and then pick another, and the footer note exists to say
+  // that closing setup will not stop whatever is running.
+  const downloading = $derived(Object.keys($models.progress).length > 0);
 
   /**
    * What the primary button offers.
@@ -100,6 +103,10 @@
         return speechModel?.installed ? "Continue" : "Skip for now";
       case "cleanup":
         return refineModel?.installed ? "Continue" : "Not now";
+      // Preferences rather than tasks, like muting: answered whichever way the
+      // boxes are left, so there is nothing here to skip.
+      case "text":
+        return "Continue";
       default:
         return "Continue";
     }
@@ -153,6 +160,8 @@
       <SpeechStep />
     {:else if step === "cleanup"}
       <CleanupStep />
+    {:else if step === "text"}
+      <TextStep />
     {:else}
       <DoneStep />
     {/if}

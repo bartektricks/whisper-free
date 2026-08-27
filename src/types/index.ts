@@ -33,6 +33,24 @@ export type OverlayAnchor =
   | "bottom_centre"
   | "bottom_right";
 
+/** Mirrors `settings::HistoryRetention`. */
+export type HistoryRetention =
+  /** Kept in memory for this run only, and never written to disk. */
+  | "session"
+  | "one_day"
+  | "seven_days"
+  | "thirty_days"
+  | "forever";
+
+/** Mirrors `history::HistoryEntry`. */
+export interface HistoryEntry {
+  id: number;
+  /** Exactly what was inserted, after refinement and the dictionary. */
+  text: string;
+  /** Unix seconds. */
+  at: number;
+}
+
 /** Mirrors `settings::Settings`. */
 export interface Settings {
   hotkey: string;
@@ -47,6 +65,9 @@ export interface Settings {
   refine_enabled: boolean;
   refine_model_id: string;
   check_for_updates: boolean;
+  keep_on_clipboard: boolean;
+  history_enabled: boolean;
+  history_retention: HistoryRetention;
   onboarding_completed: boolean;
 }
 

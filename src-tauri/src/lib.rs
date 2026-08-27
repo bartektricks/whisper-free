@@ -30,6 +30,7 @@ pub mod audio;
 pub mod commands;
 pub mod dictation;
 pub mod dictionary;
+pub mod history;
 pub mod hotkey;
 pub mod logging;
 pub mod models;
@@ -97,6 +98,10 @@ pub struct AppContext {
     pub downloads: Mutex<HashMap<String, models::download::CancelFlag>>,
     /// User replacements applied after transcription.
     pub dictionary: Mutex<dictionary::Dictionary>,
+    /// What was dictated, when the user has asked for it to be kept
+    /// (decision 0011). Always in memory; on disk only when
+    /// `settings.history_retention` says so.
+    pub history: Mutex<history::History>,
     /// Places the final text into the focused application.
     pub inserter: Box<dyn text_insertion::TextInserter>,
     /// Claimed by whichever hotkey event gets to end a recording first.
@@ -129,6 +134,12 @@ pub struct AppContext {
 
 /// Emitted to the UI whenever the authoritative state changes.
 pub const EVENT_STATE_CHANGED: &str = "state_changed";
+
+/// Emitted when the kept history gains or loses an entry.
+///
+/// Its own event rather than a poll, so a dictation performed while the window
+/// is open shows up in the list without the user going and coming back.
+pub const EVENT_HISTORY_CHANGED: &str = "history_changed";
 
 /// Asks the settings window to bring a named section to the front.
 ///
@@ -538,6 +549,14 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir_for_store = data_dir.clone();
     let dictionary = dictionary::Dictionary::load(&dictionary::dictionary_path(&data_dir));
 
+    // Reads, prunes, and removes the file when the settings say there should
+    // not be one. See `history::open`.
+    let history = history::open(
+        settings.history_enabled,
+        settings.history_retention,
+        &history::history_path(&data_dir),
+    );
+
     // Menu bar only: no Dock icon, no app menu.
     platform::become_menu_bar_app(app);
 
@@ -577,6 +596,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         models: models::ModelStore::new(&data_dir_for_store),
         downloads: Mutex::new(HashMap::new()),
         dictionary: Mutex::new(dictionary),
+        history: Mutex::new(history),
         inserter: platform::text_inserter(app.handle().clone()),
         finishing: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
@@ -708,6 +728,10 @@ pub fn run() {
             commands::add_dictionary_entry,
             commands::update_dictionary_entry,
             commands::delete_dictionary_entry,
+            commands::get_history,
+            commands::copy_history_entry,
+            commands::delete_history_entry,
+            commands::clear_history,
             commands::can_insert_text,
             commands::request_insert_permission,
             commands::get_permissions,

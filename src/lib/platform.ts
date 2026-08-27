@@ -33,6 +33,11 @@ export function trayName(): string {
   return isMac() ? "menu bar" : "notification area";
 }
 
+/** The paste shortcut, mirroring `platform::strings::PASTE_SHORTCUT`. */
+export function pasteShortcut(): string {
+  return isMac() ? "Cmd+V" : "Ctrl+V";
+}
+
 /** Where microphone access is granted, in words. */
 export function microphoneSettings(): string {
   return isMac()

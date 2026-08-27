@@ -16,12 +16,24 @@
     id,
     downloadLabel = "Download",
     onDownload,
+    group,
+    selected = false,
+    onSelect,
   }: {
     kind: ModelKind;
     id?: string;
     downloadLabel?: string;
     /** Called when the download is started from here, not from anywhere else. */
     onDownload?: () => void;
+    /**
+     * Radio group name. Passing one turns the row into a choice as well as a
+     * download, which is what the speech step needs: at setup nothing is
+     * installed yet, so picking a model and fetching it are the same gesture.
+     * Left off, the row is exactly what it was.
+     */
+    group?: string;
+    selected?: boolean;
+    onSelect?: () => void;
   } = $props();
 
   function start(modelId: string) {
@@ -40,11 +52,33 @@
 </script>
 
 {#if model}
-  <article class="model">
+  <article class="model" class:chosen={group && selected}>
     <div class="head">
-      <div>
-        <h3>{model.name}</h3>
-        <p class="meta">{model.description}</p>
+      <div class="identity">
+        {#if group}
+          <!--
+            A radio rather than a clickable card: the choice has to be reachable
+            by keyboard, and the row also holds a button, so the whole thing
+            cannot become one label.
+          -->
+          <input
+            type="radio"
+            name={group}
+            id="choose-{model.id}"
+            checked={selected}
+            onchange={() => onSelect?.()}
+          />
+        {/if}
+        <div>
+          <h3>
+            {#if group}
+              <label for="choose-{model.id}">{model.name}</label>
+            {:else}
+              {model.name}
+            {/if}
+          </h3>
+          <p class="meta">{model.description}</p>
+        </div>
       </div>
       <div class="actions">
         {#if active}
@@ -101,6 +135,25 @@
     justify-content: space-between;
     align-items: flex-start;
     gap: 14px;
+  }
+
+  .identity {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .identity input {
+    margin-top: 2px;
+    flex: none;
+  }
+
+  .identity label {
+    cursor: pointer;
+  }
+
+  .model.chosen {
+    border-color: var(--accent);
   }
 
   .actions {
