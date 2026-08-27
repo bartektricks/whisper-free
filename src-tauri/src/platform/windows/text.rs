@@ -62,7 +62,11 @@ impl TextInserter for Inserter {
         // input, and no settings page to open.
     }
 
-    fn insert(&self, text: &str) -> Result<InsertOutcome, InsertError> {
+    fn insert(
+        &self,
+        text: &str,
+        keep_on_clipboard: bool,
+    ) -> Result<InsertOutcome, InsertError> {
         let clipboard = self.app.clipboard();
 
         // Every format, not just the text: what a user copies out of a
@@ -70,7 +74,10 @@ impl TextInserter for Inserter {
         // putting back only the text would discard the rest. Taking the
         // snapshot is also what renders formats the owner had only advertised
         // (decision 0010).
-        let previous = super::clipboard::capture();
+        // Nothing is captured when the user has asked to keep the
+        // transcription: the snapshot exists to be put back, and reading every
+        // format costs real work for something about to be discarded.
+        let previous = (!keep_on_clipboard).then(super::clipboard::capture);
 
         clipboard
             .write_text(text)
@@ -82,15 +89,17 @@ impl TextInserter for Inserter {
 
         std::thread::sleep(PASTE_SETTLE);
 
-        let restored = super::clipboard::restore(&previous);
-        if let Err(e) = &restored {
-            tracing::warn!(error = %e, "could not restore the clipboard");
-        }
-        let outcome = ClipboardOutcome::after_restore(
-            restored.is_ok(),
-            previous.is_empty(),
-            previous.is_incomplete(),
-        );
+        let outcome = previous.map_or(ClipboardOutcome::Kept, |previous| {
+            let restored = super::clipboard::restore(&previous);
+            if let Err(e) = &restored {
+                tracing::warn!(error = %e, "could not restore the clipboard");
+            }
+            ClipboardOutcome::after_restore(
+                restored.is_ok(),
+                previous.is_empty(),
+                previous.is_incomplete(),
+            )
+        });
 
         Ok(InsertOutcome { clipboard: outcome })
     }

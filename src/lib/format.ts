@@ -30,3 +30,28 @@ export function summariseLanguages(
   if (rest <= 0) return lead.join(" and ");
   return `${lead.join(", ")} and ${rest} more`;
 }
+
+/**
+ * When something was dictated, relative to now, e.g. `12 minutes ago`.
+ *
+ * Relative rather than a timestamp because that is the question the history
+ * list answers: entries are found by "the one from just before lunch", not by
+ * a clock reading. Anything past a week gets a date, where relative stops
+ * helping.
+ */
+export function formatWhen(unixSeconds: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.round(now / 1000 - unixSeconds));
+  if (seconds < 60) return "just now";
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+
+  return new Date(unixSeconds * 1000).toLocaleDateString();
+}

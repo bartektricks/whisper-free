@@ -53,6 +53,9 @@ impl InsertError {
 pub enum ClipboardOutcome {
     /// Everything that was there was put back.
     Restored,
+    /// The transcription was left on the clipboard because the user asked for
+    /// it, so there was nothing to put back (decision 0011).
+    Kept,
     /// The clipboard was empty to begin with, so there was nothing to restore.
     NothingToRestore,
     /// The clipboard was put back, but a flavour the system had listed could
@@ -114,13 +117,20 @@ pub trait TextInserter: Send + Sync {
 
     /// Put `text` into the focused application.
     ///
+    /// `keep_on_clipboard` leaves the transcription on the clipboard instead of
+    /// restoring what was there before. It is passed in rather than read here
+    /// because this module knows nothing about settings, and it is a parameter
+    /// rather than two methods because the paste itself is identical either
+    /// way: the only difference is whether the last step happens.
+    ///
     /// # Errors
     ///
     /// [`InsertError::PermissionDenied`] when the OS refuses synthetic input,
     /// [`InsertError::Clipboard`] when the clipboard cannot be written, and
     /// [`InsertError::Keystroke`] when the paste cannot be sent — in which case
     /// the text is still on the clipboard.
-    fn insert(&self, text: &str) -> Result<InsertOutcome, InsertError>;
+    fn insert(&self, text: &str, keep_on_clipboard: bool)
+        -> Result<InsertOutcome, InsertError>;
 }
 
 #[cfg(test)]
@@ -191,6 +201,12 @@ mod tests {
             ClipboardOutcome::after_restore(false, true, true),
             ClipboardOutcome::RestoreFailed
         );
+    }
+
+    #[test]
+    fn a_clipboard_the_user_asked_us_to_keep_is_not_a_loss() {
+        // Nothing went wrong: the previous clipboard was given up on purpose.
+        assert!(!ClipboardOutcome::Kept.lost_the_clipboard());
     }
 
     #[test]

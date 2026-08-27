@@ -16,6 +16,27 @@ pub enum RecordingMode {
     Toggle,
 }
 
+/// How long a kept transcription stays kept (decision 0011).
+///
+/// [`Self::Session`] is the one that behaves differently in kind rather than in
+/// degree: it never reaches the disk at all, so a user who wants the list
+/// without a file in their home directory has that. The rest are windows, and
+/// `HistoryRetention::cutoff` is the pure rule that turns them into a date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryRetention {
+    /// Kept in memory for this run only, and never written to disk.
+    Session,
+    OneDay,
+    /// The default when history is switched on: long enough to find yesterday's
+    /// paragraph, short enough that the file does not become an archive nobody
+    /// meant to keep.
+    #[default]
+    SevenDays,
+    ThirtyDays,
+    Forever,
+}
+
 /// The model shipped as the default choice. Not downloaded until the user asks.
 pub const DEFAULT_MODEL_ID: &str = "parakeet-tdt-0.6b-v3";
 
@@ -30,10 +51,10 @@ pub const DEFAULT_HOTKEY: &str = crate::platform::default_hotkey();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-// Four independent checkboxes, not four states of one thing: a user can want
-// any combination of them, and the file is a flat mirror of the panel. Folding
-// them into an enum or a bitfield would make `settings.json` harder to read by
-// hand, which is the one debugging tool this file has.
+// Independent checkboxes, not states of one thing: a user can want any
+// combination of them, and the file is a flat mirror of the panel. Folding them
+// into an enum or a bitfield would make `settings.json` harder to read by hand,
+// which is the one debugging tool this file has.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Settings {
     pub hotkey: String,
@@ -68,6 +89,22 @@ pub struct Settings {
     /// the only thing in the app that reaches the network without the user
     /// pressing a button for it, so it does not happen until they say so.
     pub check_for_updates: bool,
+    /// Leave the transcription on the clipboard instead of putting back what
+    /// was there before (decision 0011).
+    ///
+    /// Off by default, because it is the one setting here that takes something
+    /// away: the clipboard the user was holding. On, the paste still happens
+    /// and the words are also there to paste again.
+    pub keep_on_clipboard: bool,
+    /// Keep a local list of what was dictated (decision 0011).
+    ///
+    /// **Off by default, and unlike `mute_while_recording` it must stay that
+    /// way.** This is the only thing in the app that writes transcription text
+    /// to disk, so it is switched on by a person who has read what it does, not
+    /// inherited from `Default` by an install that never asked for it.
+    pub history_enabled: bool,
+    /// How long kept transcriptions last, when the history is on.
+    pub history_retention: HistoryRetention,
     /// Whether the user has been through first-run setup (decision 0007).
     ///
     /// **Defaults to `true`, deliberately.** A settings file written before
@@ -94,6 +131,9 @@ impl Default for Settings {
             refine_enabled: false,
             refine_model_id: DEFAULT_REFINE_MODEL_ID.to_string(),
             check_for_updates: false,
+            keep_on_clipboard: false,
+            history_enabled: false,
+            history_retention: HistoryRetention::default(),
             onboarding_completed: true,
         }
     }

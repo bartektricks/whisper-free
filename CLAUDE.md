@@ -68,7 +68,7 @@ deliberately outside `cargo test` — they need a microphone, ~671 MB on disk, a
 on first run. `WHISPER_FREE_LOG=whisper_free_lib=debug` overrides the log filter;
 logs land in `~/Library/Logs/com.bartek.whisperfree/`, user data in
 `~/Library/Application Support/com.bartek.whisperfree/` (`settings.json`,
-`dictionary.json`, `models/`) — `%APPDATA%\com.bartek.whisperfree\` on Windows. Paths
+`dictionary.json`, `history.json` when the user has asked for one, `models/`) — `%APPDATA%\com.bartek.whisperfree\` on Windows. Paths
 always come from Tauri's resolver, never hardcoded.
 
 The Windows backend **cannot be cross-compiled from macOS** (`ring`'s C build needs the
@@ -146,6 +146,23 @@ which is what removes the Accessibility step there. Nothing is granted in this p
 window is open. No step blocks the next one: the primary button changes its label to
 `Skip for now` instead of being disabled, and the last panel lists what was skipped. See
 `docs/decisions/0007-first-run-onboarding.md`.
+
+**History (`history/`)** is the opt-in local record of what was dictated (decision 0011),
+and the one place the app writes transcription text to disk. `settings.history_enabled`
+defaults to **`false` and must stay that way** — the opposite of `mute_while_recording`,
+because a feature that writes down what someone said has to be chosen rather than
+inherited from `Default`. `HistoryRetention` carries two separate pure rules that are easy
+to confuse: `cutoff` is how old is too old, and `persists` is whether entries reach the
+disk at all. `Session` is the retention where `persists` is false, which is why it is a
+retention rather than a second checkbox. Choosing it, or switching the feature off,
+**deletes `history.json`** rather than merely ceasing to write it; `history::open` does
+that at launch and `update_settings` does it on the spot. The list is bounded by age *and*
+by `MAX_ENTRIES` (500), so `Forever` still has a ceiling. `remember` in `dictation.rs`
+runs after the insertion succeeded and is advisory exactly as refinement and muting are: a
+poisoned lock or a full disk is a log line, never a failed dictation, because the words are
+already in the user's document by then. Nothing here is ever logged. `keep_on_clipboard`
+is the other half of the same decision and lives in `TextInserter::insert` as a parameter:
+when set, no snapshot is taken at all and the outcome is `ClipboardOutcome::Kept`.
 
 **Overlay (`overlay.rs`)** is the floating indicator, a second window labelled
 `overlay` declared in `tauri.conf.json`. Rust decides *whether* it is on screen and
@@ -287,14 +304,19 @@ denied in it. `src/overlay/` must not import `app.css`: it paints `body` opaque.
 
 ## Invariants worth not breaking
 
-- **Privacy is architectural.** Audio stays in memory and never touches disk. Never log or
-  persist audio samples, transcription text, clipboard contents, or dictionary entries —
-  log shapes only (durations, sample counts, char counts, event names). No telemetry, and
+- **Privacy is architectural.** Audio stays in memory and never touches disk — that part
+  has no exception. **Never log** audio samples, transcription text, clipboard contents, or
+  dictionary entries; log shapes only (durations, sample counts, char counts, event names).
+  Never *persist* any of them either, with one exception: **transcription text, when
+  `settings.history_enabled` says so** — off by default, deleted when switched off, and
+  written only by `history/`, which itself logs counts and never text. No telemetry, and
   no network call other than an explicitly requested model download **or an update check
   the user has switched on** — `settings.check_for_updates` is off by default and
   `update::watch` re-reads it every tick, so nothing reaches the network until someone
-  presses the button or ticks the box. See `docs/decisions/0006-in-app-updates.md`, which
-  is what amended this sentence.
+  presses the button or ticks the box. Two decisions amended this paragraph and both did it
+  the same way, by rewriting the sentence rather than quietly breaking it:
+  `docs/decisions/0006-in-app-updates.md` for the network clause, and
+  `docs/decisions/0011-keeping-what-was-dictated.md` for the persistence one.
 - **Errors that reach the UI are written for a person.** Each error enum has a
   `user_message()` returning plain language that names where to fix the problem; raw detail
   goes to `tracing`. Existing tests assert those messages leak no internals (`ort::`,

@@ -46,7 +46,11 @@ impl TextInserter for Inserter {
         crate::platform::open_input_permission_settings();
     }
 
-    fn insert(&self, text: &str) -> Result<InsertOutcome, InsertError> {
+    fn insert(
+        &self,
+        text: &str,
+        keep_on_clipboard: bool,
+    ) -> Result<InsertOutcome, InsertError> {
         if !self.can_insert() {
             return Err(InsertError::PermissionDenied);
         }
@@ -58,7 +62,10 @@ impl TextInserter for Inserter {
         // putting back only the text would discard the rest. Taking the
         // snapshot is also what rescues text macOS had only promised, which is
         // the case that used to be reported as an image (decision 0010).
-        let previous = super::clipboard::capture();
+        // Nothing is captured when the user has asked to keep the
+        // transcription: the snapshot exists to be put back, and reading every
+        // flavour costs real work for something about to be discarded.
+        let previous = (!keep_on_clipboard).then(super::clipboard::capture);
 
         clipboard
             .write_text(text)
@@ -70,15 +77,17 @@ impl TextInserter for Inserter {
 
         std::thread::sleep(PASTE_SETTLE);
 
-        let restored = super::clipboard::restore(&previous);
-        if let Err(e) = &restored {
-            tracing::warn!(error = %e, "could not restore the clipboard");
-        }
-        let outcome = ClipboardOutcome::after_restore(
-            restored.is_ok(),
-            previous.is_empty(),
-            previous.is_incomplete(),
-        );
+        let outcome = previous.map_or(ClipboardOutcome::Kept, |previous| {
+            let restored = super::clipboard::restore(&previous);
+            if let Err(e) = &restored {
+                tracing::warn!(error = %e, "could not restore the clipboard");
+            }
+            ClipboardOutcome::after_restore(
+                restored.is_ok(),
+                previous.is_empty(),
+                previous.is_incomplete(),
+            )
+        });
 
         Ok(InsertOutcome { clipboard: outcome })
     }
