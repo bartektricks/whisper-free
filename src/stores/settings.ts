@@ -11,6 +11,7 @@ const DEFAULTS: Settings = {
   start_at_login: false,
   show_overlay: true,
   overlay_anchor: "bottom_centre",
+  mute_while_recording: true,
   refine_enabled: false,
   refine_model_id: "qwen2.5-0.5b-instruct",
   check_for_updates: false,

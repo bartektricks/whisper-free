@@ -235,6 +235,53 @@ pub fn open_url(url: &str) {
     }
 }
 
+/// A silenced output device, and what it was before, so it can be put back
+/// exactly as it was.
+///
+/// Opaque on purpose. The value inside comes from the private `backend`
+/// module, so application code can hold one of these, hand it back, and do
+/// nothing else with it, which is the whole of what the pipeline needs.
+///
+/// Restoring happens on drop as well as through [`restore_system_output`], so
+/// a value that goes out of scope down some path nobody thought about still
+/// gives the user their sound back.
+pub struct OutputMute(backend::output::Mute);
+
+impl std::fmt::Debug for OutputMute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OutputMute")
+    }
+}
+
+impl Drop for OutputMute {
+    fn drop(&mut self) {
+        backend::output::restore(&self.0);
+    }
+}
+
+/// Mute whatever the system is playing through, and report what was changed.
+///
+/// `None` means there is nothing to put back later, which covers three cases
+/// that all want the same treatment: there is no output device, the device
+/// offers no way to silence it, or, the one worth being careful about, the
+/// user had already muted it themselves. Unmuting somebody who muted their own
+/// machine would be worse than not muting at all.
+///
+/// Best effort by design. Silencing is a courtesy, so a failure here is a log
+/// line and a dictation that runs anyway, never an error the user has to clear.
+#[must_use]
+pub fn mute_system_output() -> Option<OutputMute> {
+    backend::output::mute().map(OutputMute)
+}
+
+/// Put back exactly what [`mute_system_output`] changed.
+///
+/// The work is in `OutputMute`'s `Drop`; this is the name to call it by, so
+/// that a call site reads as the intention rather than as a bare `drop`.
+pub fn restore_system_output(mute: OutputMute) {
+    drop(mute);
+}
+
 /// One monitor's geometry, in the units Tauri reports it in.
 ///
 /// A plain copy of what [`tauri::Monitor`] carries, so the monitor-picking

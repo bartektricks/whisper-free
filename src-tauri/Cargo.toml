@@ -107,6 +107,16 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSWindow",
 ] }
 
+# Muting the default output device while the microphone is open
+# (`platform/macos/output.rs`). Already in the tree via cpal, so the version is
+# pinned to match rather than to add a second copy, and the default features are
+# off: they pull in objc2-foundation, dispatch2 and libc for headers none of
+# this touches. `AudioHardware` is the one that carries AudioObject*.
+objc2-core-audio = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "AudioHardware",
+] }
+
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 transcribe-rs = { version = "0.3.11", features = ["onnx"] }
 
@@ -115,6 +125,20 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+] }
+
+# The same mute, through the audio endpoint (`platform/windows/output.rs`).
+# `windows-sys` exposes COM as raw vtables, which a two-call sequence does not
+# justify; `windows` wraps them and is already in the tree via tauri, tao and
+# wry, so the version is pinned to match rather than to add a second copy.
+windows = { version = "0.61", features = [
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    # `IMMDevice::Activate` names a PROPVARIANT in its signature even when it is
+    # handed `None`, so the method does not exist without these two.
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
 ] }
 
 [profile.release]
