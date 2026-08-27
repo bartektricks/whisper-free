@@ -14,9 +14,12 @@
    */
   const outstanding = $derived(
     [
-      $models.models.some((m) => m.kind === "speech" && m.installed)
+      // The *chosen* model, not any speech model: someone who downloaded one
+      // and then picked another during setup has nothing loadable, and "some
+      // speech model is installed" would call that finished.
+      $models.models.find((m) => m.id === $settings.model_id)?.installed
         ? null
-        : "The speech model is not downloaded, so dictation cannot run yet. Settings › Models.",
+        : "The speech model you picked is not downloaded, so dictation cannot run yet. Settings › Models.",
       $permissions.microphone === "denied"
         ? "Microphone access is refused, so recordings come out silent. Settings › Audio has the test."
         : null,

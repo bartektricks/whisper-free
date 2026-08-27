@@ -72,10 +72,10 @@
   const refineModel = $derived(
     $models.models.find((m) => m.id === $settings.refine_model_id),
   );
-  const downloading = $derived(
-    Boolean(speechModel && $models.progress[speechModel.id]) ||
-      Boolean(refineModel && $models.progress[refineModel.id]),
-  );
+  // Any download, not just the two chosen ones: the speech step lets a user
+  // start one model and then pick another, and the footer note exists to say
+  // that closing setup will not stop whatever is running.
+  const downloading = $derived(Object.keys($models.progress).length > 0);
 
   /**
    * What the primary button offers.
