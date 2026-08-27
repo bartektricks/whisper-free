@@ -65,10 +65,12 @@ impl TextInserter for Inserter {
     fn insert(&self, text: &str) -> Result<InsertOutcome, InsertError> {
         let clipboard = self.app.clipboard();
 
-        // Remember what was there. A read failure is not necessarily an empty
-        // clipboard — it may hold an image or files, which we cannot preserve.
-        let previous = clipboard.read_text().ok();
-        let had_non_text = previous.is_none() && clipboard.read_image().is_ok();
+        // Every format, not just the text: what a user copies out of a
+        // spreadsheet or a design tool is several formats of one thing, and
+        // putting back only the text would discard the rest. Taking the
+        // snapshot is also what renders formats the owner had only advertised
+        // (decision 0010).
+        let previous = super::clipboard::capture();
 
         clipboard
             .write_text(text)
@@ -80,17 +82,15 @@ impl TextInserter for Inserter {
 
         std::thread::sleep(PASTE_SETTLE);
 
-        let outcome = match previous {
-            Some(previous) => match clipboard.write_text(previous) {
-                Ok(()) => ClipboardOutcome::Restored,
-                Err(e) => {
-                    tracing::warn!(error = %e, "could not restore the clipboard");
-                    ClipboardOutcome::RestoreFailed
-                }
-            },
-            None if had_non_text => ClipboardOutcome::NonTextReplaced,
-            None => ClipboardOutcome::NothingToRestore,
-        };
+        let restored = super::clipboard::restore(&previous);
+        if let Err(e) = &restored {
+            tracing::warn!(error = %e, "could not restore the clipboard");
+        }
+        let outcome = ClipboardOutcome::after_restore(
+            restored.is_ok(),
+            previous.is_empty(),
+            previous.is_incomplete(),
+        );
 
         Ok(InsertOutcome { clipboard: outcome })
     }

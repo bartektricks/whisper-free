@@ -12,7 +12,6 @@ use crate::hotkey::chord::{classify, ChordStep};
 use crate::hotkey::{decide, HotkeyAction, HotkeyEvent, Shortcut, CHORD_TIMEOUT};
 use crate::refine;
 use crate::state::AppState;
-use crate::text_insertion::ClipboardOutcome;
 use crate::{fail_app_state, set_app_state, AppContext};
 
 /// Entry point for every hotkey transition.
@@ -590,13 +589,14 @@ fn insert(app: &AppHandle, ctx: &AppContext, final_text: &str) {
                 chars = final_text.chars().count(),
                 clipboard = ?outcome.clipboard
             );
-            // The user's clipboard held something we could not put back. Better
-            // to say so than to let them discover it later.
-            if outcome.clipboard == ClipboardOutcome::NonTextReplaced {
-                fail_app_state(
-                    app,
-                    "Text inserted. Your clipboard held an image, which could not be restored.",
-                );
+            // Only a clipboard that could not be put back at all is worth
+            // interrupting anyone over. `PartlyRestored` is deliberately not:
+            // the flavour that could not be read is nearly always one macOS
+            // derives from another (plain text from RTF, TIFF from PNG), and
+            // it reappears by itself once the flavour it comes from is back.
+            // Reporting it would be the false alarm decision 0010 removed.
+            if outcome.clipboard.lost_the_clipboard() {
+                fail_app_state(app, "Text inserted, but your clipboard could not be put back.");
                 return;
             }
             set_app_state(app, AppState::Ready);

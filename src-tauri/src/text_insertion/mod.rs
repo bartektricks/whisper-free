@@ -41,18 +41,60 @@ impl InsertError {
 ///
 /// Reported so the caller can tell the user when something was lost rather
 /// than letting it vanish silently (plan §11).
+///
+/// Every flavour of the previous clipboard is captured and put back, not just
+/// the text, so a rich clipboard survives a dictation. There used to be a
+/// `NonTextReplaced` variant covering "not text, so not preserved"; it was
+/// inferred from a failed text read, which conflates *no text was there* with
+/// *the text there could not be read*, and macOS produces the second far more
+/// often than the first. See `docs/decisions/0010-preserving-the-clipboard.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClipboardOutcome {
-    /// Previous text was put back.
+    /// Everything that was there was put back.
     Restored,
     /// The clipboard was empty to begin with, so there was nothing to restore.
     NothingToRestore,
-    /// The clipboard held something that is not text (an image, files). It
-    /// could not be preserved across the paste.
-    NonTextReplaced,
+    /// The clipboard was put back, but a flavour the system had listed could
+    /// not be read at all, so what came back is poorer than what was there.
+    PartlyRestored,
     /// Restoration was attempted and failed.
     RestoreFailed,
+}
+
+impl ClipboardOutcome {
+    /// What to report after putting a captured clipboard back.
+    ///
+    /// Pure, so the rule can be checked without a pasteboard, the same split as
+    /// `hotkey::decide` and `state::is_valid`. Both backends share it: the two
+    /// platforms capture very different things, but what the user is owed about
+    /// the result is the same on each.
+    #[must_use]
+    pub const fn after_restore(succeeded: bool, was_empty: bool, was_incomplete: bool) -> Self {
+        if !succeeded {
+            return Self::RestoreFailed;
+        }
+        // Emptiness first: an empty clipboard cannot be partly anything, and
+        // "nothing to restore" is the more honest of the two.
+        if was_empty {
+            Self::NothingToRestore
+        } else if was_incomplete {
+            Self::PartlyRestored
+        } else {
+            Self::Restored
+        }
+    }
+
+    /// Whether the user is measurably worse off than before the insertion.
+    ///
+    /// [`Self::PartlyRestored`] is deliberately not: a flavour that could not be
+    /// read is nearly always one the system derives from another it *could*
+    /// read, and it reappears of its own accord once that one is back. Saying
+    /// so would be the false alarm decision 0010 set out to remove.
+    #[must_use]
+    pub const fn lost_the_clipboard(self) -> bool {
+        matches!(self, Self::RestoreFailed)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -110,6 +152,45 @@ mod tests {
     fn clipboard_errors_stay_readable() {
         let msg = InsertError::Clipboard("NSPasteboard error -25300".into()).user_message();
         assert!(!msg.contains("NSPasteboard"), "leaked internals: {msg}");
+    }
+
+    #[test]
+    fn a_clipboard_that_came_back_whole_is_not_reported_as_a_loss() {
+        let outcome = ClipboardOutcome::after_restore(true, false, false);
+        assert_eq!(outcome, ClipboardOutcome::Restored);
+        assert!(!outcome.lost_the_clipboard());
+    }
+
+    #[test]
+    fn an_underivable_flavour_is_recorded_but_never_surfaced() {
+        // The case that used to be reported as "your clipboard held an image":
+        // the system lists a flavour it can no longer produce, so the snapshot
+        // is incomplete even though restoring the flavour it *was* derived from
+        // brings it back. Worth a log line, never worth an error.
+        let outcome = ClipboardOutcome::after_restore(true, false, true);
+        assert_eq!(outcome, ClipboardOutcome::PartlyRestored);
+        assert!(!outcome.lost_the_clipboard());
+    }
+
+    #[test]
+    fn an_empty_clipboard_is_never_called_partly_restored() {
+        // Nothing was captured, so "incomplete" says nothing the user needs.
+        let outcome = ClipboardOutcome::after_restore(true, true, true);
+        assert_eq!(outcome, ClipboardOutcome::NothingToRestore);
+        assert!(!outcome.lost_the_clipboard());
+    }
+
+    #[test]
+    fn only_a_clipboard_that_could_not_be_written_back_is_surfaced() {
+        let outcome = ClipboardOutcome::after_restore(false, false, false);
+        assert_eq!(outcome, ClipboardOutcome::RestoreFailed);
+        assert!(outcome.lost_the_clipboard());
+
+        // A failure outranks everything else it could be called.
+        assert_eq!(
+            ClipboardOutcome::after_restore(false, true, true),
+            ClipboardOutcome::RestoreFailed
+        );
     }
 
     #[test]

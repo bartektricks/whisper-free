@@ -246,8 +246,22 @@ the app `Uninitialized` rather than quietly dictating with the old one.
 
 **Text insertion (`text_insertion/`, `platform/*/text.rs`)** is clipboard + a synthetic
 paste — no per-app integrations, by design. The previous clipboard is restored after a
-150 ms settle, and `ClipboardOutcome` reports what happened to it so a lost image is
-surfaced rather than silent. The two backends are not symmetric in one way that matters:
+150 ms settle, and **every flavour of it is, not just the text**: `platform/*/clipboard.rs`
+snapshots the whole pasteboard and writes it all back, so a rich clipboard survives a
+dictation. That module is backend-private (`platform::backend::clipboard`), and the
+clipboard plugin is still what *writes* the transcription and only that, since it cannot
+express what these read. Reading every flavour is also load-bearing rather than thorough:
+both systems advertise flavours they have not produced (plain text derived from RTF, a
+delay-rendered Windows format) and serve them by asking the app that did the copying, so a
+read is what turns a promise into bytes while the owner is still there to serve it. The old
+code read only text, and inferred `NonTextReplaced` from that read failing, which is how a
+clipboard holding unfulfilled-promise text got reported to users as an image.
+`ClipboardOutcome::after_restore` and `lost_the_clipboard` are pure, shared by both
+backends and carry the tests; `PartlyRestored` is deliberately **never surfaced**, because
+an unreadable flavour is nearly always a derived one that returns by itself. Only
+`RestoreFailed` reaches the user. See
+`docs/decisions/0010-preserving-the-clipboard.md`. The two backends are not symmetric in
+one way that matters:
 a macOS `CGEvent` sets its modifier flags absolutely, while Windows' `SendInput` is read
 against the real keyboard, so `platform/windows/text.rs` must clear modifiers the user is
 still holding or a held Alt turns Ctrl+V into Ctrl+Alt+V.
