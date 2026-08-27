@@ -13,10 +13,18 @@
 //! See `docs/decisions/0009-muting-other-audio-while-recording.md`.
 
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::Duration;
 
 use crate::platform;
 use crate::state::{AppState, StateSnapshot};
 use crate::AppContext;
+
+/// How long the exit path waits for the sound to be back.
+///
+/// Generous for what it covers, which is one property write on a device that is
+/// already open. Anything slower than this is a driver that is not going to
+/// answer at all.
+const RESTORE_TIMEOUT: Duration = Duration::from_secs(2);
 
 enum Command {
     Silence,
@@ -77,12 +85,21 @@ impl MuteEngine {
     /// making the hotkey handler wait on a device, but quitting mid-recording
     /// has to outlast the send, or the process would be gone before the thread
     /// picked the message up and the machine would be left silent.
+    ///
+    /// The wait is bounded, because the thread it waits on is mid-conversation
+    /// with an audio device. A driver that never answers would otherwise leave
+    /// the app unable to quit, and of the two ways this can go wrong, output
+    /// left muted is the one the user undoes with the volume key. It is also
+    /// exactly what a crash already leaves behind, per decision 0009.
     pub fn restore_blocking(&self) {
         let (tx, rx) = channel();
         self.send(Command::Restore(Some(tx)), "restore");
-        // An error means the thread is already gone, which is nothing this can
-        // do anything about.
-        let _ = rx.recv();
+        // A thread that is already gone reports back immediately rather than
+        // waiting the timeout out: the reply channel travels inside the
+        // undelivered command and is dropped with it.
+        if let Err(e) = rx.recv_timeout(RESTORE_TIMEOUT) {
+            tracing::warn!(event = "mute_restore_unconfirmed", reason = ?e);
+        }
     }
 
     fn send(&self, command: Command, what: &'static str) {
@@ -170,6 +187,25 @@ mod tests {
                 "{state:?} does not hold the microphone open"
             );
         }
+    }
+
+    /// The exit path waits on this, so a mute thread that never started must
+    /// not be able to stop the app quitting. It returns because the reply
+    /// channel travels *inside* the undelivered command and dies with it,
+    /// which a refactor of `send` could quietly break.
+    #[test]
+    fn restore_blocking_returns_when_the_mute_thread_is_gone() {
+        let (tx, rx) = channel();
+        drop(rx);
+        let engine = MuteEngine { tx };
+
+        let start = std::time::Instant::now();
+        engine.restore_blocking();
+
+        assert!(
+            start.elapsed() < RESTORE_TIMEOUT,
+            "waited the timeout out instead of noticing the thread was gone"
+        );
     }
 
     #[test]

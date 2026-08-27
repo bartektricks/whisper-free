@@ -101,6 +101,15 @@ Quitting mid-recording must not leave the machine silent, managed state is not r
 dropped on the way out, and a fire-and-forget send would lose the race with process
 teardown. Waiting there is the point.
 
+That wait is bounded at two seconds, which is the one place this design admits a deadline.
+The thread being waited on is mid-conversation with an audio device, and a driver that
+never answers would otherwise leave the app unable to quit. Between the two ways it can
+go wrong, output left muted is recoverable with the volume key and an app that will not
+quit needs Force Quit, so the timeout resolves in favour of the outcome a crash already
+produces. A thread that was never started does not reach the deadline at all: the reply
+channel travels inside the undelivered command and is dropped with it, so the send fails
+and the receive reports a disconnect immediately.
+
 ## The platform contract gains an opaque value
 
 ```rust
