@@ -21,6 +21,13 @@ pub enum RejectReason {
     LengthRatio,
     /// Too many words differ. A correction edits; this rewrote.
     TooDivergent,
+    /// Words appeared that the speaker never said. Under
+    /// [`Rule::Containment`] this is the whole defence: a normaliser may drop
+    /// as much as it likes, but anything it *adds* was invented.
+    Invented,
+    /// The end of the transcription is missing. A cleanup thins a sentence
+    /// throughout; losing the tail is a truncation.
+    Truncated,
     /// The model talked to us instead of answering.
     Meta,
 }
@@ -33,6 +40,8 @@ impl RejectReason {
             Self::Empty => "empty",
             Self::LengthRatio => "length_ratio",
             Self::TooDivergent => "too_divergent",
+            Self::Invented => "invented",
+            Self::Truncated => "truncated",
             Self::Meta => "meta",
         }
     }
@@ -51,35 +60,98 @@ pub enum Verdict {
     Reject(RejectReason),
 }
 
-/// How far a candidate may stray before it stops being a correction.
+/// How a candidate is judged against the transcription it came from.
 ///
-/// Measured, not guessed. Across the sample in
-/// `measured_corrections_and_rewrites_stay_separated`, real corrections score
-/// 0.000-0.105 and rewrites 0.190-0.762, so the threshold sits in that gap,
-/// nearer the rewrites to leave headroom for a sentence with more errors than
-/// any tested here.
+/// Two rules, because the two models this app has shipped fail in opposite
+/// directions. A general instruct model asked to proofread will quietly rewrite
+/// a sentence that was already fine, so what matters is *how much* changed. A
+/// normaliser is *supposed* to change a lot - fillers out, numbers written -
+/// so magnitude says nothing, and what matters is whether anything appeared
+/// that the speaker never said.
 ///
-/// The gap is narrower than it looks, and re-measuring beats nudging the
-/// number: if a legitimate correction ever lands above the line, the fix is to
-/// widen the *sample* and see where the boundary really is.
-#[derive(Debug, Clone, Copy)]
+/// Both are measured, not guessed; see decision 0012 for the corpus.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Rule {
+    /// Bound how far the text moved. Decision 0005's rule, kept for the
+    /// light-touch setting.
+    Magnitude {
+        /// Lower bound on `candidate chars / original chars`.
+        min_length_ratio: f64,
+        /// Upper bound on the same ratio. Above 1.0 because punctuation,
+        /// capitalisation and expanded numerals all add characters.
+        max_length_ratio: f64,
+        /// Upper bound on normalised character edit distance over the longer
+        /// side.
+        max_divergence: f64,
+    },
+    /// Bound what the text gained. Deletions are free, invention is not.
+    Containment {
+        /// Lower bound on `candidate words / original words`. Catches a
+        /// summary, which the upper bound cannot see.
+        min_growth: f64,
+        /// Upper bound on the same. Normalisation only ever shortens or holds,
+        /// so anything above ~1 is the model adding its own sentences.
+        max_growth: f64,
+        /// Upper bound on the fraction of candidate words that never appear in
+        /// the transcription. See [`novel_word_rate`] for what does not count.
+        max_novel_word_rate: f64,
+    },
+}
+
+/// The thresholds a candidate is judged against.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Limits {
-    /// Lower bound on `candidate chars / original chars`.
-    pub min_length_ratio: f64,
-    /// Upper bound on the same ratio. Above 1.0 because punctuation,
-    /// capitalisation and expanded numerals all add characters.
-    pub max_length_ratio: f64,
-    /// Upper bound on normalised character edit distance over the longer side.
-    pub max_divergence: f64,
+    pub rule: Rule,
+}
+
+impl Limits {
+    /// Accept corrections only: punctuation, capitalisation, a misheard word.
+    ///
+    /// Decision 0005's numbers, unchanged. Across that decision's sample real
+    /// corrections scored 0.000-0.105 and rewrites 0.190-0.762, so the
+    /// threshold sits in the gap, nearer the rewrites to leave headroom for a
+    /// sentence with more errors than any tested there.
+    #[must_use]
+    pub const fn light_touch() -> Self {
+        Self {
+            rule: Rule::Magnitude {
+                min_length_ratio: 0.5,
+                max_length_ratio: 1.6,
+                max_divergence: 0.18,
+            },
+        }
+    }
+
+    /// Accept the whole of what a normaliser does, and nothing more.
+    ///
+    /// Measured against S1-mini's real output over decision 0012's corpus of
+    /// 21 dictations. Every cleanup the model got *right* scored **0.000**
+    /// novel words; the only two above zero were both the model getting it
+    /// wrong - a mangled proper noun at 0.167 and a garbled Polish sentence at
+    /// 0.333 - so the threshold separates good output from bad rather than
+    /// large edits from small. Growth ran 0.500-1.000 across every accepted
+    /// case.
+    ///
+    /// The floor is the weakest of the three: nothing in the corpus came near
+    /// it, so it is a backstop against a summary rather than a measured
+    /// boundary.
+    #[must_use]
+    pub const fn full_cleanup() -> Self {
+        Self {
+            rule: Rule::Containment {
+                min_growth: 0.35,
+                max_growth: 1.10,
+                max_novel_word_rate: 0.10,
+            },
+        }
+    }
 }
 
 impl Default for Limits {
+    /// Light touch. The conservative rule is the safe default for anything that
+    /// forgets to choose.
     fn default() -> Self {
-        Self {
-            min_length_ratio: 0.5,
-            max_length_ratio: 1.6,
-            max_divergence: 0.18,
-        }
+        Self::light_touch()
     }
 }
 
@@ -121,11 +193,20 @@ const STRIPPABLE_PREFIXES: &[&str] = &[
 ///
 /// Returns the text to use on [`Verdict::Accept`]; on anything else the caller
 /// pastes `original`.
+///
+/// `vocabulary` is the user's dictionary replacements. Decision 0005 fed those
+/// to the *model*, as a hint; a fine-tuned normaliser has no slot for them, so
+/// they moved here instead, where they say "this word is the speaker's even
+/// though they did not say it that way" - which is what they always meant.
 #[must_use]
-pub fn judge(original: &str, candidate: &str, limits: &Limits) -> Verdict {
+pub fn judge(original: &str, candidate: &str, limits: &Limits, vocabulary: &[String]) -> Verdict {
     let cleaned = unwrap_candidate(candidate);
 
     if cleaned.trim().is_empty() {
+        // S1-mini returns an empty string for filler-only input, and the model
+        // card calls that correct. It is not correct *here*: the caller pastes
+        // the raw transcription instead, because deleting what someone said is
+        // the one outcome this stage may never produce.
         return Verdict::Reject(RejectReason::Empty);
     }
 
@@ -133,12 +214,35 @@ pub fn judge(original: &str, candidate: &str, limits: &Limits) -> Verdict {
         return Verdict::Reject(RejectReason::Meta);
     }
 
-    if !length_ratio_ok(original, cleaned, limits) {
-        return Verdict::Reject(RejectReason::LengthRatio);
-    }
-
-    if divergence(original, cleaned) > limits.max_divergence {
-        return Verdict::Reject(RejectReason::TooDivergent);
+    match limits.rule {
+        Rule::Magnitude {
+            min_length_ratio,
+            max_length_ratio,
+            max_divergence,
+        } => {
+            if !length_ratio_ok(original, cleaned, min_length_ratio, max_length_ratio) {
+                return Verdict::Reject(RejectReason::LengthRatio);
+            }
+            if divergence(original, cleaned) > max_divergence {
+                return Verdict::Reject(RejectReason::TooDivergent);
+            }
+        }
+        Rule::Containment {
+            min_growth,
+            max_growth,
+            max_novel_word_rate,
+        } => {
+            let growth = word_growth(original, cleaned);
+            if growth < min_growth || growth > max_growth {
+                return Verdict::Reject(RejectReason::LengthRatio);
+            }
+            if novel_word_rate(original, cleaned, vocabulary) > max_novel_word_rate {
+                return Verdict::Reject(RejectReason::Invented);
+            }
+            if !tail_survives(original, cleaned) {
+                return Verdict::Reject(RejectReason::Truncated);
+            }
+        }
     }
 
     if cleaned == original.trim() {
@@ -218,7 +322,7 @@ fn starts_with_meta(text: &str) -> bool {
 }
 
 /// Is the candidate's length plausible for a correction of `original`?
-fn length_ratio_ok(original: &str, candidate: &str, limits: &Limits) -> bool {
+fn length_ratio_ok(original: &str, candidate: &str, min: f64, max: f64) -> bool {
     let original_chars = original.trim().chars().count();
     let candidate_chars = candidate.chars().count();
 
@@ -232,7 +336,7 @@ fn length_ratio_ok(original: &str, candidate: &str, limits: &Limits) -> bool {
     #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     let ratio = candidate_chars as f64 / original_chars as f64;
 
-    ratio >= limits.min_length_ratio && ratio <= limits.max_length_ratio
+    ratio >= min && ratio <= max
 }
 
 /// Fraction of the text that changed, in `0.0..=1.0`.
@@ -260,6 +364,163 @@ fn divergence(original: &str, candidate: &str) -> f64 {
     let fraction = levenshtein(&a, &b) as f64 / longest as f64;
 
     fraction
+}
+
+/// Candidate words per original word, over [`normalise`]d text.
+///
+/// The cheap half of [`Rule::Containment`]. Normalisation only ever shortens
+/// or holds a transcript, so this catches both a model that summarised (far
+/// below 1) and one that answered or appended commentary (above 1), without
+/// looking at *which* words changed.
+fn word_growth(original: &str, candidate: &str) -> f64 {
+    let source = word_count(original);
+    let produced = word_count(candidate);
+    if source == 0 {
+        return if produced == 0 { 1.0 } else { f64::INFINITY };
+    }
+
+    // Both are the length of one utterance, far below the 2^53 at which an
+    // integer stops being exactly representable; the result only decides a
+    // comparison against a ratio.
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+    let ratio = produced as f64 / source as f64;
+
+    ratio
+}
+
+fn word_count(text: &str) -> usize {
+    normalise(text).split_whitespace().count()
+}
+
+/// Fraction of the candidate's words that the speaker never said.
+///
+/// The load-bearing half of [`Rule::Containment`]. A normaliser is allowed to
+/// throw away as much as it likes - that is the job - so the only question
+/// worth asking is what it *added*.
+///
+/// Four things stop a legitimate normalisation being counted as invention, and
+/// each is here because it fired on a measured case:
+///
+/// - a word already in the transcript, which is most of the output;
+/// - a word carrying a digit, because "twenty five" becoming "25" and "three
+///   thirty p m" becoming "3:30pm" are the feature. Counting only *all*-digit
+///   words missed the second of those and failed a good cleanup;
+/// - two or three consecutive transcript words run together, because "git hub"
+///   becoming "GitHub" and "p m" becoming "pm" are the same feature;
+/// - a term from the user's dictionary, which is the speaker telling us how
+///   their own vocabulary is spelled.
+///
+/// What is left is a word with no source in what was said. Decision 0012
+/// measured every normalisation in the corpus at exactly zero of them.
+fn novel_word_rate(original: &str, candidate: &str, vocabulary: &[String]) -> f64 {
+    let normalised = normalise(original);
+    let source: Vec<&str> = normalised.split_whitespace().collect();
+    let produced = normalise(candidate);
+    let words: Vec<&str> = produced.split_whitespace().collect();
+
+    if words.is_empty() {
+        return 0.0;
+    }
+
+    let mut allowed: std::collections::HashSet<String> =
+        source.iter().map(|w| (*w).to_owned()).collect();
+    // Runs of two and three, which is as far as a spoken form ever splits a
+    // written word in the corpus.
+    for run in 2..=3 {
+        for window in source.windows(run) {
+            allowed.insert(window.concat());
+        }
+    }
+    for term in vocabulary {
+        for word in normalise(term).split_whitespace() {
+            allowed.insert(word.to_owned());
+        }
+    }
+
+    let novel = words
+        .iter()
+        .filter(|word| !allowed.contains(**word))
+        .filter(|word| !word.chars().any(|c| c.is_ascii_digit()))
+        .count();
+
+    // Word counts of one utterance; see the note in `divergence`.
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+    let rate = novel as f64 / words.len() as f64;
+
+    rate
+}
+
+/// Words that carry no content, so their absence from the end means nothing.
+///
+/// Only used to find where the transcript's last *real* word is. Deliberately
+/// short: a word wrongly listed here weakens the check, and every one of these
+/// is something a normaliser is expected to drop.
+const TAIL_FILLERS: &[&str] = &[
+    "um", "uh", "er", "ah", "like", "you", "know", "so", "basically", "actually", "i", "mean",
+    "well", "right", "just", "really", "yeah", "okay", "sort", "kind", "of",
+];
+
+/// How many of the transcript's last content words to look for.
+const TAIL_WORDS: usize = 3;
+/// How far back from the end of the candidate to look for them.
+const TAIL_WINDOW: usize = 6;
+
+/// Does the candidate still reach the end of what was said?
+///
+/// The measure [`word_growth`] cannot provide. Both a cleanup and a truncation
+/// shrink the text, and on long input they shrink it by *similar amounts*:
+/// filler-heavy dictation legitimately comes back at 0.60 of its word count,
+/// which is the same ratio as losing the last two sentences of a paragraph. No
+/// threshold on size can separate those.
+///
+/// What separates them is *where* the loss falls. Removing fillers thins a
+/// sentence evenly and still ends where the speaker ended; a truncation stops
+/// early. So this asks the only question that distinguishes them: do any of the
+/// transcript's last few content words show up near the end of the candidate?
+///
+/// The one legitimate way for the ending to disappear is inverse text
+/// normalisation rewriting it - "by three thirty p m" becoming "by 3:30pm"
+/// leaves none of those words behind - so a digit in the candidate's tail
+/// counts as the ending being accounted for.
+fn tail_survives(original: &str, candidate: &str) -> bool {
+    let normalised = normalise(original);
+    let source: Vec<&str> = normalised.split_whitespace().collect();
+    let produced = normalise(candidate);
+    let words: Vec<&str> = produced.split_whitespace().collect();
+
+    if source.is_empty() || words.is_empty() {
+        return true;
+    }
+
+    let tail: Vec<&str> = source
+        .iter()
+        .filter(|word| !TAIL_FILLERS.contains(*word))
+        .rev()
+        .take(TAIL_WORDS)
+        .copied()
+        .collect();
+    // Nothing but fillers to look for, so nothing to conclude.
+    if tail.is_empty() {
+        return true;
+    }
+
+    let start = words.len().saturating_sub(TAIL_WINDOW);
+    let end: &[&str] = words.get(start..).unwrap_or(&words);
+
+    // A rewritten ending, not a missing one.
+    if end.iter().any(|word| word.chars().any(|c| c.is_ascii_digit())) {
+        return true;
+    }
+
+    let mut allowed: std::collections::HashSet<String> =
+        end.iter().map(|w| (*w).to_owned()).collect();
+    for run in 2..=3 {
+        for window in end.windows(run) {
+            allowed.insert(window.concat());
+        }
+    }
+
+    tail.iter().any(|word| allowed.contains(*word))
 }
 
 /// Reduce text to the part a correction is not supposed to change: lowercase
@@ -343,7 +604,7 @@ mod tests {
     use super::*;
 
     fn judge_default(original: &str, candidate: &str) -> Verdict {
-        judge(original, candidate, &Limits::default())
+        judge(original, candidate, &Limits::light_touch(), &[])
     }
 
     fn rejected(original: &str, candidate: &str) -> RejectReason {
@@ -389,7 +650,9 @@ mod tests {
             ("Dzień dobry, zgubiłem swoją kartę kredytową.", "Hello, I lost my credit card."),
         ];
 
-        let limit = Limits::default().max_divergence;
+        let Rule::Magnitude { max_divergence: limit, .. } = Limits::light_touch().rule else {
+            panic!("light touch must stay a magnitude rule")
+        };
         for (original, candidate) in corrections {
             let d = divergence(original, candidate);
             assert!(d <= limit, "correction scored {d:.3}, over the {limit} limit: {candidate:?}");
@@ -398,6 +661,337 @@ mod tests {
             let d = divergence(original, candidate);
             assert!(d > limit, "rewrite scored {d:.3}, under the {limit} limit: {candidate:?}");
         }
+    }
+
+    fn judge_full(original: &str, candidate: &str) -> Verdict {
+        judge(original, candidate, &Limits::full_cleanup(), &[])
+    }
+
+    fn rejected_full(original: &str, candidate: &str) -> RejectReason {
+        match judge_full(original, candidate) {
+            Verdict::Reject(reason) => reason,
+            other => panic!("expected a rejection, got {other:?}"),
+        }
+    }
+
+    /// The measurement that sets the containment thresholds (decision 0012).
+    ///
+    /// The twin of `measured_corrections_and_rewrites_stay_separated`, and the
+    /// reason full cleanup needed a different *shape* of rule rather than a
+    /// looser number: most of these score past the 0.18 divergence limit, and
+    /// several fail the light-touch length ratio too.
+    ///
+    /// Every candidate here is **what S1-mini actually returned**, not what a
+    /// normaliser might plausibly produce. That distinction earned its keep:
+    /// a hand-written corpus had the model turning "cuber netties" into
+    /// "Kubernetes", and the real model returns `CuberNet's`.
+    #[test]
+    fn measured_cleanups_are_accepted_and_bad_output_is_not() {
+        // Accepted: fillers dropped, false starts resolved, numbers, currency,
+        // email addresses and times written out, and text that was already
+        // clean left alone.
+        let accepted: &[(&str, &str)] = &[
+            (
+                "so um i need to like send the the report by uh friday no wait make that thursday",
+                "So I need to send the report by Thursday.",
+            ),
+            (
+                "um so i think we should probably ship it on monday",
+                "So I think we should probably ship it on Monday.",
+            ),
+            (
+                "send twenty five dollars to bartek at example dot com by three thirty p m",
+                "Send $25 to bartek@example.com by 3:30pm.",
+            ),
+            ("uh the meeting is at noon", "The meeting is at noon."),
+            (
+                "i pushed the fix to git hub and it broke the build",
+                "I pushed the fix to GitHub, and it broke the build.",
+            ),
+            (
+                "hi sarah just wanted to check in about the deck uh can you send it over thanks bartek",
+                "Hi Sarah, just wanted to check in about the deck. Can you send it over? Thanks, Bartek",
+            ),
+            (
+                "okay so the plan is um we ship the beta on tuesday then we uh collect feedback for a week and then we do the real launch",
+                "Okay, so the plan is we ship the beta on Tuesday, then we collect feedback for a week, and then we do the real launch.",
+            ),
+            // Already clean, and left that way.
+            ("the build is broken on windows", "The build is broken on Windows."),
+            (
+                "The API returns a 500 error when the body is empty.",
+                "The API returns a 500 error when the body is empty.",
+            ),
+            // A question is punctuated, not answered. The model is a normaliser
+            // and does not take the bait, which is most of why this rule can
+            // afford to be as loose as it is.
+            ("what is the capital of france", "What is the capital of France?"),
+            ("how do i sort a list in python", "How do I sort a list in Python?"),
+            // Polish is not a language this model claims, and left alone it
+            // does no harm.
+            (
+                "zgubilem karte kredytowa wczoraj wieczorem",
+                "Zgubilem karte kredytowa wczoraj wieczorem.",
+            ),
+        ];
+        // Rejected: both of these are the model getting it wrong, and both are
+        // the *only* two cases in the corpus that scored above zero novel
+        // words. The threshold separates good output from bad, not big edits
+        // from small.
+        let rejected: &[(&str, &str)] = &[
+            // A proper noun it had never seen, mangled rather than fixed.
+            (
+                "lets deploy to cuber netties on friday no actually on monday",
+                "Let's deploy to CuberNet's on Monday",
+            ),
+            // Polish, damaged: "dzien" became "dziennym" and "karte" "karta".
+            (
+                "dzien dobry zgubilem swoja karte kredytowa",
+                "Dziennym dobry, zgubilem swoja karta kredytowa.",
+            ),
+        ];
+
+        for (original, candidate) in accepted {
+            let verdict = judge_full(original, candidate);
+            assert!(
+                matches!(verdict, Verdict::Accept(_) | Verdict::Unchanged),
+                "a good cleanup was rejected as {verdict:?}: {candidate:?}"
+            );
+        }
+        for (original, candidate) in rejected {
+            assert!(
+                matches!(judge_full(original, candidate), Verdict::Reject(_)),
+                "bad output was accepted: {candidate:?}"
+            );
+        }
+    }
+
+    /// The measurement that added the tail check.
+    ///
+    /// The three "heavy filler" cases are real S1-mini output on long,
+    /// disfluent dictation, and they come back at 0.600-0.627 of their word
+    /// count with nothing lost. The three truncations sit at 0.287-0.571. The
+    /// ranges *overlap*, which is the whole point: no growth threshold can
+    /// separate a paragraph with its fillers removed from a paragraph missing
+    /// its last two sentences. Where the loss falls is what separates them.
+    #[test]
+    fn a_cleanup_that_loses_the_end_is_rejected_however_much_it_keeps() {
+        // Real output: filler-heavy dictation, correctly cleaned, ~0.6 growth.
+        let kept: &[(&str, &str)] = &[
+            (
+                "um so uh i think that we should uh you know maybe um look at the the thing that we talked about uh yesterday i mean the the the deployment thing um because uh you know it is it is kind of um blocking us right now and uh i think that maybe we should just um you know go ahead and and do it uh this week if that is if that is okay with everyone um yeah",
+                "So I think that we should look at the thing that we talked about yesterday, the deployment thing, because it is kind of blocking us right now. And I think that maybe we should just go ahead and do it this week, if that is okay with everyone. Yeah",
+            ),
+            (
+                "okay so um i mean uh the thing is that we we have we have this this issue where um where the where the tests are are flaky uh you know and and i think that uh that maybe it is a timing thing um but i am not i am not totally sure uh so what i what i want to do is is um just add some retries and and see if that if that helps at all",
+                "Okay, so the thing is, we have this issue where the tests are flaky, and I think that maybe it is a timing thing, but I am not totally sure. So what I want to do is just add some retries and see if that helps at all.",
+            ),
+        ];
+        // Stopped early, and *keeping more of the text* than the cases above:
+        // 0.571 of the words against their 0.600. Only the tail check can tell
+        // these apart, and it is the reason each is refused.
+        let truncated_past_the_growth_floor: &[(&str, &str)] = &[
+            (
+                "let us see i will try to create a longer transcription and see how fast it is and then i want to check the second part as well",
+                "Let's see. I will try to create a longer transcription and see how fast it is.",
+            ),
+            (
+                "i pushed the fix to git hub and it broke the build so i had to revert it again this morning",
+                "I pushed the fix to GitHub, and it broke the build.",
+            ),
+        ];
+        // Stopped early enough that the growth floor catches them first. Still
+        // rejected, just for the cheaper reason.
+        let truncated_below_the_growth_floor: &[(&str, &str)] = &[
+            (
+                "okay so um i mean uh the thing is that we we have we have this this issue where um where the where the tests are are flaky uh you know and and i think that uh that maybe it is a timing thing um but i am not i am not totally sure uh so what i what i want to do is is um just add some retries and and see if that if that helps at all",
+                "Okay, so the thing is, we have this issue where the tests are flaky.",
+            ),
+            (
+                "send twenty five dollars to bartek at example dot com and then call me back tomorrow morning about the invoice",
+                "Send $25 to bartek@example.com.",
+            ),
+        ];
+
+        for (original, candidate) in kept {
+            let verdict = judge_full(original, candidate);
+            assert!(
+                matches!(verdict, Verdict::Accept(_)),
+                "a correct cleanup was rejected as {verdict:?}: {candidate:?}"
+            );
+        }
+        for (original, candidate) in truncated_past_the_growth_floor {
+            assert_eq!(
+                rejected_full(original, candidate),
+                RejectReason::Truncated,
+                "only the tail check can catch this one: {candidate:?}"
+            );
+        }
+        for (original, candidate) in truncated_below_the_growth_floor {
+            assert!(
+                matches!(judge_full(original, candidate), Verdict::Reject(_)),
+                "a truncation was accepted: {candidate:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ending_rewritten_into_digits_is_not_a_missing_ending() {
+        // "by three thirty p m" -> "by 3:30pm" leaves none of those words
+        // behind, and that is the feature working, not the tail going missing.
+        assert!(tail_survives(
+            "send twenty five dollars to bartek at example dot com by three thirty p m",
+            "Send $25 to bartek@example.com by 3:30pm."
+        ));
+    }
+
+    #[test]
+    fn a_transcript_ending_in_fillers_still_has_its_tail_checked() {
+        // The last word said is "annoying"; "and uh that is that is really"
+        // trailing off must not become the thing we look for.
+        assert!(tail_survives(
+            "it works most of the time but maybe one in ten times it does not and uh that is really annoying you know",
+            "It works most of the time, but maybe one in ten times it does not. And that is really annoying."
+        ));
+        assert!(!tail_survives(
+            "it works most of the time but maybe one in ten times it does not and uh that is really annoying you know",
+            "It works most of the time."
+        ));
+    }
+
+    /// What full cleanup cannot do, pinned the way decision 0005 pinned the
+    /// magnitude rule's blind spot.
+    ///
+    /// Containment asks whether anything was *added*, so it cannot see words
+    /// that were merely dropped, as long as enough of them survive the growth
+    /// floor. The measured case: "translate this into german the meeting is at
+    /// noon" comes back as "The meeting is at noon.", with the instruction
+    /// eaten. Nothing was invented and 0.556 of the words remain, so it is
+    /// accepted.
+    ///
+    /// Keeping the model from doing that is the model's job. This is here so
+    /// nobody reads the rule as stronger than it is.
+    #[test]
+    fn containment_cannot_see_an_instruction_that_was_swallowed() {
+        let said = "translate this into german the meeting is at noon";
+        let ate_the_instruction = "The meeting is at noon.";
+        assert!(
+            matches!(judge_full(said, ate_the_instruction), Verdict::Accept(_)),
+            "if this now rejects, the comment above is stale and the rule got stronger"
+        );
+    }
+
+    /// The two rules are not ordered, and that is deliberate.
+    ///
+    /// Each catches something the other misses. Light touch waves through the
+    /// damaged Polish sentence above, because 0.089 divergence is a small edit
+    /// however wrong it is; containment rejects it, because two of the words
+    /// are new. Containment in turn rejects a first-time proper-noun
+    /// correction that light touch accepts, unless the user's dictionary
+    /// already carries the word.
+    #[test]
+    fn neither_strength_is_a_superset_of_the_other() {
+        let polish = "dzien dobry zgubilem swoja karte kredytowa";
+        let damaged = "Dziennym dobry, zgubilem swoja karta kredytowa.";
+        assert!(matches!(judge_default(polish, damaged), Verdict::Accept(_)));
+        assert_eq!(rejected_full(polish, damaged), RejectReason::Invented);
+
+        let said = "lets deploy to cuber netties on friday";
+        let fixed = "Let's deploy to Kubernetes on Friday.";
+        assert!(matches!(judge_default(said, fixed), Verdict::Accept(_)));
+        assert_eq!(rejected_full(said, fixed), RejectReason::Invented);
+        // ...unless they have written the word down, which is what the
+        // dictionary is for.
+        assert!(matches!(
+            judge(said, fixed, &Limits::full_cleanup(), &["Kubernetes".to_owned()]),
+            Verdict::Accept(_)
+        ));
+    }
+
+    /// The rule the two strengths disagree about, on one input.
+    #[test]
+    fn the_two_strengths_disagree_about_filler_removal() {
+        let said = "um so i think we should probably ship it on monday";
+        let cleaned = "I think we should ship it on Monday.";
+        // Light touch keeps the user's fillers rather than trusting a change
+        // this large; full cleanup is what the model was installed for.
+        assert_eq!(rejected(said, cleaned), RejectReason::TooDivergent);
+        assert!(matches!(judge_full(said, cleaned), Verdict::Accept(_)));
+    }
+
+    /// Both strengths agree about the thing that actually matters.
+    ///
+    /// S1-mini does not do this - handed a question it punctuates it - but the
+    /// guard is what makes that safe to rely on rather than hope for.
+    #[test]
+    fn neither_strength_accepts_an_answer_to_the_transcription() {
+        let said = "what is the capital of france";
+        let answered = "The capital of France is Paris.";
+        assert!(matches!(judge_default(said, answered), Verdict::Reject(_)));
+        assert_eq!(rejected_full(said, answered), RejectReason::Invented);
+    }
+
+    #[test]
+    fn spoken_numbers_written_as_digits_do_not_count_as_invented() {
+        // "twenty five" becoming "25" is the feature, not a hallucination, and
+        // the digits appear nowhere in the transcript.
+        assert!(novel_word_rate("i need twenty five of them", "I need 25 of them.", &[]).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn words_run_together_do_not_count_as_invented() {
+        // "git hub" -> "GitHub" and "p m" -> "pm": the written form of two or
+        // three spoken words, which is most of what inverse text normalisation
+        // does to a proper noun.
+        assert!(novel_word_rate("i pushed it to git hub", "I pushed it to GitHub.", &[]).abs() < f64::EPSILON);
+        assert!(novel_word_rate("meet at three thirty p m", "Meet at 3:30 pm.", &[]).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_dictionary_term_is_the_speakers_word_even_when_they_did_not_say_it() {
+        // The user has written down that they mean "Kubernetes"; the model
+        // spelling it that way is them being understood, not invention.
+        let said = "lets deploy to cuber netties";
+        let cleaned = "Let's deploy to Kubernetes.";
+        let vocabulary = vec!["Kubernetes".to_owned()];
+        assert!(novel_word_rate(said, cleaned, &vocabulary).abs() < f64::EPSILON);
+        assert!(novel_word_rate(said, cleaned, &[]) > 0.0, "without the term it is novel");
+    }
+
+    #[test]
+    fn a_summary_is_rejected_even_though_it_invents_almost_nothing() {
+        // The growth floor catches what the novel-word rate cannot: dropping
+        // most of a sentence adds no words at all, so containment needs a
+        // length check of its own. Nothing in the measured corpus came near
+        // this line, so it is a backstop rather than a boundary.
+        let said = "we talked about the api the database migration and the new billing screen and agreed to ship the api work first";
+        assert_eq!(
+            rejected_full(said, "We talked about several things."),
+            RejectReason::LengthRatio
+        );
+    }
+
+    #[test]
+    fn an_empty_candidate_is_rejected_under_both_strengths() {
+        // S1-mini returns an empty string for filler-only input and its model
+        // card calls that correct. It is not correct here: the caller pastes
+        // what was said instead.
+        assert_eq!(rejected("um uh you know like", ""), RejectReason::Empty);
+        assert_eq!(rejected_full("um uh you know like", ""), RejectReason::Empty);
+    }
+
+    #[test]
+    fn growth_is_measured_in_words_not_characters() {
+        // Punctuation and capitalisation add characters and no words, which is
+        // why the containment rule counts words: a correct cleanup must not
+        // drift towards the ceiling just for adding full stops.
+        let growth = word_growth("the build is broken", "The build is broken!!!");
+        assert!((growth - 1.0).abs() < f64::EPSILON, "scored {growth}");
+    }
+
+    #[test]
+    fn containment_reasons_have_stable_log_labels() {
+        assert_eq!(RejectReason::Invented.as_str(), "invented");
     }
 
     /// What the guard cannot do, pinned so nobody comes to rely on it.

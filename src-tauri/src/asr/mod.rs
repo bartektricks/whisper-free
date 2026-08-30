@@ -168,6 +168,7 @@ mod tests {
                 language: None,
                 duration: Duration::ZERO,
                 audio_duration: Duration::ZERO,
+                chunked: false,
             })
         }
     }

@@ -67,6 +67,12 @@ pub struct Transcription {
     pub duration: Duration,
     /// Length of the audio that was transcribed, for real-time-factor logging.
     pub audio_duration: Duration,
+    /// Whether the audio was decoded in one pass or split into chunks.
+    ///
+    /// Logged rather than acted on. When a long dictation comes back short,
+    /// the first question is which decode path produced it, and inferring that
+    /// from the duration means knowing a threshold that belongs to the engine.
+    pub chunked: bool,
 }
 
 impl Transcription {
@@ -152,6 +158,7 @@ mod tests {
             language: None,
             duration: Duration::from_millis(500),
             audio_duration: Duration::from_secs(10),
+            chunked: false,
         };
         assert!((t.real_time_factor() - 0.05).abs() < f64::EPSILON);
     }
@@ -163,6 +170,7 @@ mod tests {
             language: None,
             duration: Duration::from_millis(1),
             audio_duration: Duration::from_secs(1),
+            chunked: false,
         };
         assert!(t.is_empty());
     }

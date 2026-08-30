@@ -42,6 +42,21 @@ export type HistoryRetention =
   | "thirty_days"
   | "forever";
 
+/** Mirrors `settings::RefineStrength`. */
+export type RefineStrength =
+  /** Punctuation, capitalisation and a misheard word; anything larger is
+   * thrown away, so fillers and false starts survive into the paste. */
+  | "light_touch"
+  /** Fillers dropped, false starts resolved, numbers and dates written out. */
+  | "full_cleanup";
+
+/** Mirrors `refine::prompt::Styling`. */
+export type RefineStyling =
+  | "casual"
+  | "semi_casual"
+  | "semi_formal"
+  | "formal";
+
 /** Mirrors `history::HistoryEntry`. */
 export interface HistoryEntry {
   id: number;
@@ -64,6 +79,8 @@ export interface Settings {
   mute_while_recording: boolean;
   refine_enabled: boolean;
   refine_model_id: string;
+  refine_strength: RefineStrength;
+  refine_styling: RefineStyling;
   check_for_updates: boolean;
   keep_on_clipboard: boolean;
   history_enabled: boolean;

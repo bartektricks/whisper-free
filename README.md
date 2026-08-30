@@ -90,15 +90,24 @@ honour rather than quietly ignoring it.
 ### Optional cleanup
 
 Settings › Cleanup runs each transcription past
-[Qwen2.5 0.5B Instruct](https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct)
-(490 MB) to fix words the speech model misheard, "cuber netties" for
-"Kubernetes". It is off by default, because it costs about a second per dictation
-and half a gigabyte of memory on top of the speech model.
+["S1-mini" by "Superwhisper"](https://huggingface.co/superwhisper/s1-mini) (412 MB), which
+writes what you dictated the way you would have typed it: fillers dropped, false starts
+resolved to whatever you settled on, and spoken numbers, dates, times and email addresses
+written out. "so um i need to like send the the report by uh friday no wait make that
+thursday" becomes "I need to send the report by Thursday."
 
-A cleanup is only ever a suggestion: the rewrite is measured against what you
-actually said and thrown away if it strays, so the worst case is the raw
-transcription. It is much weaker in Polish than in English, where it tends to
-translate rather than correct.
+It is off by default, because it costs about half a second per dictation and about
+400 MB of memory on top of the speech model. Two settings shape it: **how much to change**
+(full cleanup, or light touch for punctuation and misheard words only) and **style**, from
+casual through to formal.
+
+A cleanup is only ever a suggestion. The result is measured against what you actually said,
+and if a word appears that you never spoke, the whole thing is thrown away and your own
+words are pasted instead. That covers the model answering you, translating you, or guessing
+at a name it did not know. Your dictionary is applied afterwards either way.
+
+**English only.** If you have pinned a different language in Settings › Speech, cleanup is
+skipped rather than attempted.
 
 ## Privacy
 

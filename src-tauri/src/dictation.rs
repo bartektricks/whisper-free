@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::asr::{AsrError, TranscriptionOptions};
+use crate::asr::{AsrError, LanguageSelection, TranscriptionOptions};
 use crate::hotkey::chord::{classify, ChordStep};
 use crate::hotkey::{decide, HotkeyAction, HotkeyEvent, Shortcut, CHORD_TIMEOUT};
 use crate::refine;
@@ -526,6 +526,7 @@ fn finish(app: &AppHandle, ctx: &AppContext) {
         audio_ms = crate::millis(transcription.audio_duration),
         inference_ms = crate::millis(transcription.duration),
         real_time_factor = transcription.real_time_factor(),
+        chunked = transcription.chunked,
         chars = transcription.text.chars().count()
     );
 
@@ -665,20 +666,18 @@ fn remember(app: &AppHandle, ctx: &AppContext, final_text: &str) {
 /// the raw transcription. Losing a correction disappoints; losing the user's
 /// words is a bug (decision 0005).
 fn refine_text(app: &AppHandle, ctx: &AppContext, raw: &str) -> String {
-    let enabled = ctx
-        .settings
-        .lock()
-        .is_ok_and(|settings| settings.refine_enabled);
-    if !enabled {
+    let Some(request) = refine_request(ctx) else {
         return raw.to_owned();
-    }
+    };
 
-    // The user's own words, so the model does not "correct" a term it has
-    // simply never seen. Their spellings, not the misheard forms.
-    let vocabulary = ctx.dictionary.lock().map_or_else(
-        |_| Vec::new(),
-        |dictionary| dictionary.replacement_terms(),
-    );
+    // The user's own spellings. Decision 0005 gave these to the model as a
+    // hint; a fine-tuned normaliser has no slot for one, so they go to the
+    // guard instead, where they mark a word as the speaker's own rather than
+    // something the model invented.
+    let vocabulary = ctx
+        .dictionary
+        .lock()
+        .map_or_else(|_| Vec::new(), |dictionary| dictionary.replacement_terms());
 
     let Ok(mut guard) = ctx.refiner.lock() else {
         tracing::warn!(event = "refinement_skipped", reason = "lock_poisoned");
@@ -696,7 +695,9 @@ fn refine_text(app: &AppHandle, ctx: &AppContext, raw: &str) -> String {
         *last_used = Some(std::time::Instant::now());
     }
 
-    let options = refine::RefineOptions { vocabulary };
+    let options = refine::RefineOptions {
+        styling: request.styling,
+    };
     let refinement = match refiner.refine(raw, &options) {
         Ok(refinement) => refinement,
         Err(e) => {
@@ -714,7 +715,7 @@ fn refine_text(app: &AppHandle, ctx: &AppContext, raw: &str) -> String {
         total_ms = crate::millis(refinement.duration)
     );
 
-    match refine::guard::judge(raw, &refinement.text, &refine::Limits::default()) {
+    match refine::guard::judge(raw, &refinement.text, &request.limits, &vocabulary) {
         refine::Verdict::Accept(text) => {
             tracing::info!(
                 event = "refinement_accepted",
@@ -732,6 +733,48 @@ fn refine_text(app: &AppHandle, ctx: &AppContext, raw: &str) -> String {
             raw.to_owned()
         }
     }
+}
+
+/// What this dictation should be refined with, or `None` to skip the stage.
+struct RefineRequest {
+    limits: refine::Limits,
+    styling: refine::Styling,
+}
+
+fn refine_request(ctx: &AppContext) -> Option<RefineRequest> {
+    let settings = ctx.settings.lock().ok()?;
+    if !settings.refine_enabled {
+        return None;
+    }
+
+    // S1-mini is English-only in v1, and a normaliser handed another language
+    // does not fail visibly: it translates, fluently, exactly the way a Canary
+    // model given the wrong language does. The guard catches that (a
+    // translation shares almost no words with its source), but when the user
+    // has already told us the language there is no reason to spend a second
+    // finding out. Nothing to check when the language is detected rather than
+    // pinned, which is the Parakeet case.
+    if let LanguageSelection::Fixed(language) = &settings.language {
+        if !is_english(language) {
+            tracing::info!(event = "refinement_skipped", reason = "language_not_english");
+            return None;
+        }
+    }
+
+    Some(RefineRequest {
+        limits: settings.refine_strength.limits(),
+        styling: settings.refine_styling,
+    })
+}
+
+/// Whether a language tag names English, ignoring any region suffix.
+fn is_english(language: &str) -> bool {
+    let base = language
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(language)
+        .trim();
+    base.eq_ignore_ascii_case("en") || base.eq_ignore_ascii_case("eng")
 }
 
 /// User-facing wording for an ASR failure (plan §17).

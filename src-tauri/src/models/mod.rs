@@ -266,23 +266,36 @@ const CANARY_180M_FLASH_FILES: &[ModelFile] = &[
     NEMO128_PREPROCESSOR,
 ];
 
-/// The refinement model (decision 0005).
+/// The refinement model (decision 0012, replacing 0005's Qwen2.5).
 ///
 /// Digests computed from the files the measurements in that decision were taken
 /// against, and cross-checked against the sizes HuggingFace reports.
-const QWEN25_05B_FILES: &[ModelFile] = &[
+///
+/// The first model in the registry whose weights do not fit in one file. ONNX
+/// Runtime finds `model_q4.onnx_data` by the location string recorded inside
+/// the graph, resolved next to the `.onnx`, so the local name has to be exactly
+/// that and `ModelStore::dir_for` flattening every file into one directory is
+/// what makes it work.
+const S1_MINI_FILES: &[ModelFile] = &[
     ModelFile {
-        name: "model_q4f16.onnx",
-        remote: "onnx/model_q4f16.onnx",
-        sha256: "b11c1dd99efd57e6c6e5bc4443a019931a5fbd5dd500d48644d8225f5ce0b2cb",
-        size_bytes: 483_003_582,
+        name: "model_q4.onnx",
+        remote: "onnx/model_q4.onnx",
+        sha256: "be5f0d8d03ac387bdd2d2582e4e114ca3c23a44b70bf03be609844542107745c",
+        size_bytes: 369_635,
+        base_url: None,
+    },
+    ModelFile {
+        name: "model_q4.onnx_data",
+        remote: "onnx/model_q4.onnx_data",
+        sha256: "85bcddf9b558e4881215c32652bc9345672530d77a432d2aee7f2e0c1ee62869",
+        size_bytes: 403_007_488,
         base_url: None,
     },
     ModelFile {
         name: "tokenizer.json",
         remote: "tokenizer.json",
-        sha256: "a8506e7111b80c6d8635951a02eab0f4e1a8e4e5772da83846579e97b16f61bf",
-        size_bytes: 7_031_673,
+        sha256: "40ae5d1ee027b985684a3bbeef4ee16b2b5697d1d90658bec5bc5d2a73018bd7",
+        size_bytes: 9_117_036,
         base_url: None,
     },
 ];
@@ -326,14 +339,17 @@ pub const AVAILABLE_MODELS: &[ModelDescriptor] = &[ModelDescriptor {
     languages: CANARY_FLASH_LANGUAGES,
     capabilities: CANARY_CAPABILITIES,
 }, ModelDescriptor {
-    id: "qwen2.5-0.5b-instruct",
-    name: "Qwen2.5 0.5B Instruct",
-    version: "2.5",
-    description: "Checks transcriptions over and fixes misheard words. Adds about a second.",
+    // "S1-mini" by "Superwhisper", with that exact capitalisation: the licence
+    // requires the model keep its name wherever it is used, so this string and
+    // the Settings copy that shows it are not free to be prettified.
+    id: "s1-mini",
+    name: "S1-mini",
+    version: "1",
+    description: "Superwhisper's transcript cleaner. Drops fillers, fixes false starts, and writes out numbers and dates. English only.",
     kind: ModelKind::Refiner,
     engine: EngineKind::RefinerOnnx,
-    base_url: "https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct/resolve/main",
-    files: QWEN25_05B_FILES,
+    base_url: "https://huggingface.co/onnx-community/s1-mini-ONNX/resolve/main",
+    files: S1_MINI_FILES,
     languages: NO_LANGUAGES,
     capabilities: NO_CAPABILITIES,
 }];
@@ -457,6 +473,18 @@ impl ModelError {
 }
 
 /// Where models live on disk.
+/// Total size of the files directly inside a directory.
+fn directory_bytes(dir: &Path) -> u64 {
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter_map(|e| e.metadata().ok())
+            .filter(std::fs::Metadata::is_file)
+            .map(|m| m.len())
+            .fold(0, u64::saturating_add)
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelStore {
     root: PathBuf,
@@ -525,6 +553,49 @@ impl ModelStore {
     }
 
     /// Delete an installed model and everything under its directory.
+    /// Delete downloads for models the registry no longer offers.
+    ///
+    /// A retired model's files are unreachable rather than merely unused: with
+    /// no descriptor naming them, `list` cannot show the model and `remove`
+    /// cannot be reached from Settings, so half a gigabyte would sit there for
+    /// good. Decision 0012 retired one, which is why this exists.
+    ///
+    /// Only ever deletes whole directories under the models root, and only ones
+    /// no descriptor claims. Model files are a cache of something
+    /// re-downloadable, never user data.
+    pub fn remove_retired(&self) -> u64 {
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return 0;
+        };
+
+        let mut freed: u64 = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if AVAILABLE_MODELS.iter().any(|m| m.id == name) {
+                continue;
+            }
+
+            let bytes = directory_bytes(&path);
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {
+                    freed = freed.saturating_add(bytes);
+                    tracing::info!(event = "retired_model_removed", model_id = name, bytes);
+                }
+                Err(e) => {
+                    tracing::warn!(event = "retired_model_kept", model_id = name, error = %e);
+                }
+            }
+        }
+        freed
+    }
+
+    /// Delete a model's directory.
     ///
     /// Removing a model that is not installed is not an error.
     ///
@@ -551,6 +622,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_retired_models_download_is_reclaimed_and_current_ones_are_kept() {
+        // Decision 0012 dropped a descriptor, which strands its files: with
+        // nothing naming them, Settings can neither list nor remove them.
+        let root = temp_dir("retired");
+        let store = ModelStore::new(&root);
+
+        let retired = store.dir_for("qwen2.5-0.5b-instruct");
+        std::fs::create_dir_all(&retired).unwrap();
+        std::fs::write(retired.join("model_q4f16.onnx"), vec![0_u8; 2_048]).unwrap();
+
+        let current = store.dir_for("s1-mini");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("model_q4.onnx"), vec![0_u8; 512]).unwrap();
+
+        let freed = store.remove_retired();
+
+        assert_eq!(freed, 2_048, "should report what it reclaimed");
+        assert!(!retired.exists(), "the retired download should be gone");
+        assert!(current.exists(), "a model still in the registry must be kept");
+    }
+
+    #[test]
+    fn reclaiming_is_a_no_op_when_there_is_nothing_retired() {
+        let root = temp_dir("retired-none");
+        let store = ModelStore::new(&root);
+        std::fs::create_dir_all(store.dir_for("s1-mini")).unwrap();
+        assert_eq!(store.remove_retired(), 0);
+        assert!(store.dir_for("s1-mini").exists());
     }
 
     fn parakeet() -> &'static ModelDescriptor {

@@ -1,8 +1,18 @@
 # 0005 — The local refinement model
 
-**Status:** accepted
+**Status:** accepted, and superseded in part by
+[0012](0012-a-normalising-cleanup-model.md)
 **Date:** 2026-08-20
 **Applies to:** the refinement stage; extends decision 0001, which chose the speech runtime
+
+> **What 0012 changed.** The runtime choice below (`ort`, pinned, CPU, greedy, behind our own
+> `TextRefiner` trait), the requirement that the model's output is a *proposal*, and the rule
+> that every failure falls through to the raw transcription all still stand; 0012 is built on
+> them. Two things do not: the **model** is now S1-mini rather than Qwen2.5 0.5B Instruct, and
+> the **guard rule** below is now only one of two, kept as the "light touch" setting. The
+> thresholds, the corpus and the reasoning in *The guard* are unchanged and still measured;
+> they simply no longer describe the default. The prompt findings are history: 0012's model is
+> fine-tuned on the task and needs neither the worked example nor the vocabulary block.
 
 Parakeet returns clean audio verbatim, but it mishears proper nouns, jargon and
 homophones — "cuber netties" for "Kubernetes". The dictionary only helps once the user

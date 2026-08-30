@@ -113,7 +113,10 @@ rather than against `AppState`, since state can be stale or `Error` after a fail
 rather than `Result` on purpose: **refinement is advisory**, so an absent model, a load
 error, a rejected rewrite or a cancelled run all resolve to the raw transcription. Order
 matters — the model runs first, the dictionary second, so a replacement the user wrote by
-hand is never second-guessed.
+hand is never second-guessed. `refine_request` decides *whether* to run at all, and skips
+outright when `settings.language` pins a non-English language: the cleanup model is
+English-only, and a normaliser handed another language translates it, fluently, exactly the
+way a Canary model given the wrong language does.
 
 **Updates (`update/`)** are advisory in the same sense refinement is: the module never
 touches `AppState`, so a failed check is a line in Settings › Updates rather than an error
@@ -230,8 +233,14 @@ and resampling happen on stop.
   `TextRefiner` trait. `refine/onnx.rs` is the only file that may name `ort`,
   `tokenizers`, a KV cache, or a graph input name. `refine/guard.rs` and
   `refine/prompt.rs` are pure and carry most of the tests. A second refinement
-  model is a new `EngineKind` arm in `build_refiner` (`lib.rs`) and possibly a
-  new `prompt::Template` variant. See `docs/decisions/0005-local-refinement-model.md`.
+  model is a new `EngineKind` arm in `build_refiner` (`lib.rs`). **Which optional
+  graph inputs exist is read off the graph, never assumed**: the two exports
+  this app has shipped disagree about `position_ids` and `num_logits_to_keep`,
+  and guessing wrong is a hard refusal from the runtime. The prompt prefix is
+  fixed per `Styling` and its KV cache is computed once and reused, so
+  `prompt::prefix` and `prompt::suffix` must keep concatenating to
+  `prompt::build`. See `docs/decisions/0012-a-normalising-cleanup-model.md`, and
+  `0005` for the runtime choice it still rests on.
 - `update/` — outside this module the app knows a status and three verbs (`check`,
   `install`, `restart`); `update/plugin.rs` is the only file that may name
   `tauri_plugin_updater`, a manifest, a signature or an archive. `update/schedule.rs` is
@@ -329,12 +338,21 @@ denied in it. `src/overlay/` must not import `app.css`: it paints `body` opaque.
   constants in `asr/parakeet.rs`. That ADR also documents why the execution provider is
   CPU and not CoreML (2.9× slower, 4.5× the memory on this int8 graph).
 - **A refinement never costs the user their words.** `refine/guard.rs` judges every
-  proposal against the raw transcription and rejects anything that strays — the
-  thresholds are measured, not guessed, and `measured_corrections_and_rewrites_stay_separated`
-  is the test that keeps them honest. The guard bounds *how much* may change, never
-  whether the change is right; a wrong substitution scores the same as a right one, which
-  is why the stage is opt-in and the dictionary still runs after it. Never make
-  refinement able to fail a dictation.
+  proposal against the raw transcription and rejects anything that strays. There are two
+  rules and they are **not ordered**: each catches what the other misses, so neither is
+  the other plus more. `Rule::Magnitude` (light touch) bounds *how much* changed;
+  `Rule::Containment` (full cleanup) bounds what was *added*, plus `tail_survives`, which
+  bounds what was lost off the *end*. That last one is measured, because on long input a
+  correct filler-heavy cleanup (0.60 of the words) and a truncation (0.571) overlap, so no
+  size threshold separates them and only *where* the loss falls does. Both sets of
+  thresholds are measured, not guessed, and
+  `measured_corrections_and_rewrites_stay_separated` and
+  `measured_cleanups_are_accepted_and_bad_output_is_not` are the tests that keep them
+  honest. The second scores **real model output**, which matters: a hand-written corpus
+  had the model turning "cuber netties" into "Kubernetes" and it actually returns
+  "CuberNet's". Neither rule bounds whether a change is *right*, which is why the stage is
+  opt-in and the dictionary still runs after it. Never make refinement able to fail a
+  dictation.
 - **Parakeet detects a language and cannot be pinned; Canary is pinned and cannot
   detect.** Hence two separate `Capability` values, and `check_language_request` refuses a
   mismatch up front rather than silently ignoring it. Because one `settings.language`

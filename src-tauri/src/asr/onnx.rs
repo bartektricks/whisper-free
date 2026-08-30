@@ -237,7 +237,8 @@ impl SpeechRecognizer for OnnxRecognizer {
         let started = Instant::now();
         let transcribe_options = Self::transcribe_options(&options.language);
 
-        let result = if audio_duration.as_secs_f64() > chunking.threshold_secs {
+        let split_into_chunks = audio_duration.as_secs_f64() > chunking.threshold_secs;
+        let result = if split_into_chunks {
             let mut chunker = EnergyAdaptiveChunked::new(
                 EnergyAdaptiveConfig {
                     target_chunk_secs: chunking.target_secs,
@@ -269,6 +270,7 @@ impl SpeechRecognizer for OnnxRecognizer {
             },
             duration: started.elapsed(),
             audio_duration,
+            chunked: split_into_chunks,
         })
     }
 }

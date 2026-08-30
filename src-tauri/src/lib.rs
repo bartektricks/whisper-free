@@ -253,9 +253,6 @@ fn build_refiner(
         models::EngineKind::RefinerOnnx => Some(Box::new(refine::onnx::OnnxRefiner::new(
             descriptor.id,
             model_dir,
-            // Qwen2.5 is not a reasoning model: priming an empty think block
-            // derails it. See `refine::prompt::Template`.
-            refine::Template::ChatMl,
         ))),
         models::EngineKind::Parakeet | models::EngineKind::Canary => None,
     }
@@ -517,6 +514,20 @@ pub fn load_installed_model(app: &AppHandle) {
 /// logging, the tray, managed state, and the global shortcut.
 ///
 /// Split out of [`run`] so the builder chain stays readable.
+/// Delete downloads for models the registry no longer offers.
+///
+/// A model dropped from the registry leaves its files behind with no way to
+/// reach them from Settings, so decision 0012 retiring one would have stranded
+/// half a gigabyte. Runs on every launch and does nothing when there is nothing
+/// to reclaim.
+fn reclaim_retired_models(app: &AppHandle) {
+    let ctx = app.state::<AppContext>();
+    let freed = ctx.models.remove_retired();
+    if freed > 0 {
+        tracing::info!(event = "retired_models_reclaimed", bytes = freed);
+    }
+}
+
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     let log_dir = app.path().app_log_dir()?;
@@ -644,6 +655,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::error!("overlay window is missing from the app config");
     }
+
+    reclaim_retired_models(app.handle());
 
     // Loading takes about a second and ~1.4 GB, so it happens off the startup
     // path. The app stays Uninitialized until it succeeds.
