@@ -1,6 +1,6 @@
 {
   "name": "whisper-free",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Fully local macOS dictation. Press a hotkey, speak, get text.",
   "type": "module",
   "private": true,
