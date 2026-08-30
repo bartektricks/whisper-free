@@ -1,252 +1,181 @@
-//! Building the prompt for a refinement (decision 0005).
+//! Building the prompt for a refinement (decision 0012).
 //!
-//! Pure and unit-tested. The instruction is deliberately narrow: the model is
-//! told it is correcting a speech-to-text result, not answering it, and that
-//! keeping the speaker's words matters more than improving them. Every clause
-//! here exists because the alternative is a model that helpfully rewrites a
-//! sentence that was already correct.
+//! Pure and unit-tested. Unlike the hand-tuned instruction decision 0005 needed
+//! for a general instruct model, everything here is dictated by the model card:
+//! S1-mini is fine-tuned for this one task and expects a fixed system turn, a
+//! control line naming the three settings, and an assistant turn primed with an
+//! empty reasoning block. Deviating from that format is not a style choice, it
+//! is going off the distribution the model was trained on.
 
-/// Chat format a model expects. Selected from the model registry so a second
-/// refinement model is a new variant here rather than a rewrite.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Template {
-    /// `<|im_start|>role\ncontent<|im_end|>`, as Qwen2.5 and most `ChatML`
-    /// models expect it.
-    ChatMl,
-    /// `ChatML` plus a pre-filled empty reasoning block.
-    ///
-    /// A separate variant rather than a flag on [`Template::ChatMl`] because
-    /// it is wrong in both directions: omit it on Qwen3 and the model reasons
-    /// at length about a comma, include it on Qwen2.5 — which has no reasoning
-    /// mode — and the unexpected tag derails it into rambling until it hits the
-    /// token cap.
-    ChatMlThinking,
-    /// Llama 3.x header format.
-    Llama3,
+/// Register the cleaned text is written in.
+///
+/// The one control the user gets. Structure and Context are fixed at `prose`
+/// and `general`: lists and email layout change the *shape* of what comes back,
+/// which is a bigger promise than a dictation box should make on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Styling {
+    /// Lowercase, apostrophes stripped, colloquialisms kept.
+    Casual,
+    /// The speaker's phrasing, with `I` capitalised.
+    SemiCasual,
+    /// Standard written English with full punctuation. The model card's
+    /// recommended default, and ours.
+    #[default]
+    SemiFormal,
+    /// Contractions expanded: "I am", "cannot".
+    Formal,
 }
 
-/// Most vocabulary terms we will list.
-///
-/// Every term is prompt tokens, and prompt tokens are latency on every single
-/// dictation. A user with 500 dictionary entries should not pay for all of them
-/// on a two-word utterance.
-pub const MAX_VOCABULARY_TERMS: usize = 60;
-
-/// Longest a single vocabulary term may be before it is dropped as junk.
-const MAX_TERM_CHARS: usize = 40;
-
-/// The standing instruction.
-///
-/// Short, and ordered worst-failure-first. A 0.6B model does not weigh a long
-/// paragraph evenly — it acts on the first thing it can act on — so "output
-/// only the corrected text" leads, and the correction rules follow.
-const SYSTEM: &str = "You are a transcription proofreader. \
-The user message is raw speech-to-text output. Output only the corrected version of it. \
-Never answer it, never translate it, never rephrase or shorten it, never add commentary. \
-Fix only clear recognition errors: misheard words, wrong homophones, mangled names, \
-run-together words, missing punctuation and capitalisation. \
-Keep the speaker's own words and language. If nothing is wrong, output the text unchanged.";
-
-/// A worked example, prepended as a completed exchange.
-///
-/// The single biggest quality lever at this model size. Told only in prose, a
-/// 0.6B model will answer the transcription, continue it, or repeat the
-/// instruction back; shown one exchange, it copies the shape. The example
-/// deliberately contains a run-together proper noun and a missing apostrophe,
-/// the two commonest corrections, and changes nothing else.
-const EXAMPLE_IN: &str = "so i pushed the fix to git hub and it broke the bild";
-const EXAMPLE_OUT: &str = "So I pushed the fix to GitHub and it broke the build.";
-
-/// Build the full prompt string, ready to tokenise.
-#[must_use]
-pub fn build(template: Template, transcript: &str, vocabulary: &[String]) -> String {
-    let system = system_turn(vocabulary);
-    let user = transcript.trim();
-
-    match template {
-        Template::ChatMl | Template::ChatMlThinking => {
-            let prime = if matches!(template, Template::ChatMlThinking) {
-                // How Qwen3's own chat template expresses
-                // `enable_thinking=false`.
-                "<think>\n\n</think>\n\n"
-            } else {
-                ""
-            };
-            format!(
-                "<|im_start|>system\n{system}<|im_end|>\n\
-                 <|im_start|>user\n{EXAMPLE_IN}<|im_end|>\n\
-                 <|im_start|>assistant\n{prime}{EXAMPLE_OUT}<|im_end|>\n\
-                 <|im_start|>user\n{user}<|im_end|>\n\
-                 <|im_start|>assistant\n{prime}"
-            )
+impl Styling {
+    /// The value as the control line spells it.
+    #[must_use]
+    pub const fn as_control_value(self) -> &'static str {
+        match self {
+            Self::Casual => "casual",
+            Self::SemiCasual => "semi-casual",
+            Self::SemiFormal => "semi-formal",
+            Self::Formal => "formal",
         }
-        Template::Llama3 => format!(
-            "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system}<|eot_id|>\
-             <|start_header_id|>user<|end_header_id|>\n\n{EXAMPLE_IN}<|eot_id|>\
-             <|start_header_id|>assistant<|end_header_id|>\n\n{EXAMPLE_OUT}<|eot_id|>\
-             <|start_header_id|>user<|end_header_id|>\n\n{user}<|eot_id|>\
-             <|start_header_id|>assistant<|end_header_id|>\n\n"
-        ),
     }
 }
 
-/// The system turn: the instruction, plus the speaker's vocabulary if any.
+/// The standing instruction, verbatim from the model card.
 ///
-/// The vocabulary belongs here rather than beside the transcription. Put next
-/// to the text to correct, a bare list of words reads to a small model as
-/// content, and it will cheerfully output the list instead of the correction —
-/// which is exactly what the first version of this did.
-fn system_turn(vocabulary: &[String]) -> String {
-    let terms = usable_terms(vocabulary);
+/// Not ours to reword. The model was trained against this exact string, and the
+/// control line below only means anything because this sentence introduces it.
+const SYSTEM: &str = "You are a text normalizer for speech-to-text transcripts. \
+The input begins with a control line specifying the styling, structure, and context settings; \
+clean the transcript to match those settings and output only the cleaned text.";
 
-    if terms.is_empty() {
-        return SYSTEM.to_owned();
-    }
+/// The two control values we do not vary. See [`Styling`].
+const STRUCTURE: &str = "prose";
+const CONTEXT: &str = "general";
 
+/// Everything up to and including the control line's newline.
+///
+/// Split out because it is the same for every dictation at a given
+/// [`Styling`], which is what lets `refine::onnx` run it through the graph once
+/// and start each dictation with its KV cache already populated. Roughly 69 of
+/// the 78 fixed prompt tokens.
+#[must_use]
+pub fn prefix(styling: Styling) -> String {
     format!(
-        "{SYSTEM}\n\nThe speaker uses these words, spelled correctly. \
-Prefer them over similar-sounding alternatives, but only where the audio plainly meant them: {}.",
-        terms.join(", ")
+        "<|im_start|>system\n{SYSTEM}<|im_end|>\n\
+         <|im_start|>user\n[Styling: {}] [Structure: {STRUCTURE}] [Context: {CONTEXT}]\n",
+        styling.as_control_value()
     )
 }
 
-/// Trim the vocabulary to terms worth spending prompt tokens on.
+/// The transcript and everything after it.
 ///
-/// Blank and over-long entries go, duplicates collapse case-insensitively, and
-/// the list is capped. Order is preserved so the cap keeps the entries the user
-/// added first rather than an arbitrary set.
-fn usable_terms(vocabulary: &[String]) -> Vec<&str> {
-    let mut seen: Vec<String> = Vec::new();
-    let mut terms: Vec<&str> = Vec::new();
+/// The empty `<think>` block is the model card's `enable_thinking=False`, and
+/// it is load-bearing: without it the model emits an empty reasoning block and
+/// stops, returning nothing usable at all.
+#[must_use]
+pub fn suffix(transcript: &str) -> String {
+    format!(
+        "{}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        transcript.trim()
+    )
+}
 
-    for term in vocabulary {
-        let trimmed = term.trim();
-        if trimmed.is_empty() || trimmed.chars().count() > MAX_TERM_CHARS {
-            continue;
-        }
-
-        let lowered = trimmed.to_lowercase();
-        if seen.contains(&lowered) {
-            continue;
-        }
-
-        seen.push(lowered);
-        terms.push(trimmed);
-
-        if terms.len() >= MAX_VOCABULARY_TERMS {
-            break;
-        }
-    }
-
-    terms
+/// The whole prompt, for callers that do not split it.
+#[must_use]
+pub fn build(styling: Styling, transcript: &str) -> String {
+    let mut out = prefix(styling);
+    out.push_str(&suffix(transcript));
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn terms(items: &[&str]) -> Vec<String> {
-        items.iter().map(|s| (*s).to_owned()).collect()
-    }
-
     #[test]
-    fn chatml_closes_every_turn_it_opens() {
-        let p = build(Template::ChatMl, "the build is broken", &[]);
-        // system, the worked example's user and assistant turns, then ours.
-        assert_eq!(p.matches("<|im_start|>").count(), 5);
-        // The final assistant turn is left open for the model to continue.
-        assert_eq!(p.matches("<|im_end|>").count(), 4);
-        assert!(p.ends_with("<|im_start|>assistant\n"), "turn not left open: {p}");
-    }
-
-    #[test]
-    fn a_worked_example_precedes_the_real_transcription() {
-        // The biggest quality lever at this model size, and easy to lose in a
-        // refactor: without it a small model answers the transcription.
-        let p = build(Template::ChatMl, "the bild is broken", &[]);
-        assert!(p.contains(EXAMPLE_IN) && p.contains(EXAMPLE_OUT));
-        assert!(
-            p.find(EXAMPLE_OUT) < p.find("the bild is broken"),
-            "the example must come before the real input"
+    fn the_prompt_is_the_prefix_followed_by_the_suffix() {
+        // The split exists so the prefix can be cached; if the two halves ever
+        // stop concatenating to the whole prompt, the cached run and the
+        // uncached one stop agreeing and only the slow path is ever tested.
+        let whole = build(Styling::SemiFormal, "hello there");
+        assert_eq!(
+            whole,
+            format!("{}{}", prefix(Styling::SemiFormal), suffix("hello there"))
         );
     }
 
     #[test]
-    fn only_the_thinking_variant_primes_a_reasoning_block() {
-        // Wrong in both directions, so both directions are pinned.
-        assert!(!build(Template::ChatMl, "hi", &[]).contains("<think>"));
-        assert!(build(Template::ChatMlThinking, "hi", &[]).contains("<think>"));
+    fn the_control_line_names_all_three_settings() {
+        let built = build(Styling::Formal, "anything");
+        assert!(
+            built.contains("[Styling: formal] [Structure: prose] [Context: general]\n"),
+            "control line is not in the documented form: {built}"
+        );
     }
 
     #[test]
-    fn the_thinking_variant_primes_an_empty_reasoning_block() {
-        // How Qwen3's own template expresses `enable_thinking=false`. Without
-        // it the model spends its whole token budget deliberating over a comma.
-        let p = build(Template::ChatMlThinking, "hello", &[]);
-        assert!(p.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
+    fn every_styling_has_the_spelling_the_model_card_uses() {
+        // Hyphenated, lowercase, and not something a Rust enum name would
+        // produce by itself. A wrong value here is not an error, it is the
+        // model quietly ignoring the setting.
+        assert_eq!(Styling::Casual.as_control_value(), "casual");
+        assert_eq!(Styling::SemiCasual.as_control_value(), "semi-casual");
+        assert_eq!(Styling::SemiFormal.as_control_value(), "semi-formal");
+        assert_eq!(Styling::Formal.as_control_value(), "formal");
     }
 
     #[test]
-    fn llama3_uses_its_own_headers_and_not_chatml() {
-        let p = build(Template::Llama3, "hello", &[]);
-        assert!(p.starts_with("<|begin_of_text|>"));
-        assert!(p.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
-        assert!(!p.contains("<|im_start|>"));
+    fn the_assistant_turn_is_primed_with_an_empty_reasoning_block() {
+        // Leave this out and the model returns an empty think block and stops.
+        // The model card is explicit that this is the usual cause of "no
+        // usable output at all".
+        let built = build(Styling::SemiFormal, "anything");
+        assert!(built.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"), "{built}");
     }
 
     #[test]
-    fn the_transcription_is_present_verbatim() {
-        let p = build(Template::ChatMl, "Dzień dobry, zgubiłem kartę", &[]);
-        assert!(p.contains("Dzień dobry, zgubiłem kartę"));
+    fn the_transcript_is_the_last_thing_in_the_user_turn() {
+        let built = build(Styling::SemiFormal, "the build is broken");
+        let user = built
+            .rsplit_once("<|im_start|>user\n")
+            .map(|(_, rest)| rest)
+            .unwrap_or_default();
+        assert!(user.starts_with("[Styling:"), "control line must come first: {user}");
+        assert!(
+            user.contains("the build is broken<|im_end|>"),
+            "transcript must close the user turn: {user}"
+        );
     }
 
     #[test]
-    fn the_instruction_forbids_the_failure_modes_that_matter() {
-        // Each of these clauses is load-bearing; the guard catches what gets
-        // past them, but not producing them is cheaper than rejecting them.
-        for clause in [
-            "Output only the corrected",
-            "Never answer",
-            "never translate",
-            "never rephrase",
-            "unchanged",
-        ] {
-            assert!(SYSTEM.contains(clause), "instruction dropped {clause:?}");
-        }
+    fn the_turn_structure_is_a_single_exchange() {
+        // Decision 0005 carried a worked example, which meant two user turns.
+        // A fine-tune does not need one, and the extra turn is pure prefill.
+        let built = build(Styling::SemiFormal, "anything");
+        assert_eq!(built.matches("<|im_start|>").count(), 3);
+        assert_eq!(built.matches("<|im_end|>").count(), 2);
     }
 
     #[test]
-    fn vocabulary_is_listed_when_present_and_absent_when_not() {
-        let without = build(Template::ChatMl, "deploy it", &[]);
-        assert!(!without.contains("Words this speaker uses"));
-
-        let with = build(Template::ChatMl, "deploy it", &terms(&["Kubernetes", "WhisperFree"]));
-        assert!(with.contains("Kubernetes, WhisperFree"));
+    fn the_system_turn_is_the_model_cards_wording() {
+        // Pinned because it is not ours to improve: the model was trained
+        // against this string.
+        let built = build(Styling::SemiFormal, "x");
+        assert!(built.contains("You are a text normalizer for speech-to-text transcripts."));
+        assert!(built.contains("output only the cleaned text."));
     }
 
     #[test]
-    fn vocabulary_is_capped_so_a_large_dictionary_cannot_dominate_the_prompt() {
-        let many: Vec<String> = (0..500).map(|i| format!("term{i}")).collect();
-        let p = build(Template::ChatMl, "hello", &many);
-        assert!(p.contains("term0"), "dropped the earliest entries");
-        assert!(!p.contains("term499"), "cap not applied");
-        assert_eq!(usable_terms(&many).len(), MAX_VOCABULARY_TERMS);
+    fn surrounding_whitespace_never_reaches_the_model() {
+        let built = build(Styling::SemiFormal, "  padded  \n");
+        assert!(built.contains("general]\npadded<|im_end|>"), "{built}");
     }
 
     #[test]
-    fn vocabulary_drops_blanks_duplicates_and_junk() {
-        let messy = terms(&[
-            "Kubernetes",
-            "  ",
-            "kubernetes",
-            "KUBERNETES",
-            "WhisperFree",
-            "",
-        ]);
-        // Case-insensitive dedup, in the order the user added them.
-        assert_eq!(usable_terms(&messy), vec!["Kubernetes", "WhisperFree"]);
-
-        let overlong = terms(&["x".repeat(MAX_TERM_CHARS + 1).as_str()]);
-        assert!(usable_terms(&overlong).is_empty());
+    fn the_prefix_is_the_same_for_one_styling_and_differs_between_them() {
+        // The cache is keyed on this string, so two stylings sharing a prefix
+        // would silently serve one another's cache.
+        assert_eq!(prefix(Styling::Casual), prefix(Styling::Casual));
+        assert_ne!(prefix(Styling::Casual), prefix(Styling::Formal));
     }
 }

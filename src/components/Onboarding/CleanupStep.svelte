@@ -25,12 +25,13 @@
   });
 </script>
 
-<h2>Fix what the speech model mishears?</h2>
+<h2>Tidy up what you dictate?</h2>
 <p class="lead">
   Optional, and off unless you say otherwise. A small language model reads each
-  transcription and repairs what the speech model got wrong: run-together names, the
-  wrong homophone, missing punctuation. It runs on this machine like everything else, and
-  only ever sees text that never left it.
+  transcription and writes it out the way you would have typed it: fillers dropped, false
+  starts resolved to whatever you settled on, and spoken numbers and dates written
+  properly. English only. It runs on this machine like everything else, and only ever
+  sees text that never left it.
 </p>
 
 <ModelDownload
@@ -53,16 +54,16 @@
   </label>
 {:else if !downloading}
   <p class="hint">
-    Skip this if you would rather not spend the disk or the extra second. Settings ›
+    Skip this if you would rather not spend the disk or the extra half second. Settings ›
     Cleanup has it waiting whenever you change your mind.
   </p>
 {/if}
 
 <p class="note">
-  A cleanup is only ever a suggestion. If the model rewrites, translates, shortens or
-  answers your words instead of correcting them, the change is thrown away and what you
-  actually said is pasted. Your dictionary runs afterwards either way, so replacements you
-  wrote by hand always win.
+  A cleanup is only ever a suggestion. The result is measured against what you actually
+  said, and if a word appears that you never spoke, the whole thing is thrown away and
+  your own words are pasted instead. Your dictionary runs afterwards either way, so
+  replacements you wrote by hand always win.
 </p>
 
 <style>

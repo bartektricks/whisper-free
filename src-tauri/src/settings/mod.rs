@@ -40,9 +40,17 @@ pub enum HistoryRetention {
 /// The model shipped as the default choice. Not downloaded until the user asks.
 pub const DEFAULT_MODEL_ID: &str = "parakeet-tdt-0.6b-v3";
 
-/// The refinement model offered by default. Also not downloaded until asked —
+/// The refinement model offered by default. Also not downloaded until asked,
 /// and unlike the speech model, not used until switched on either.
-pub const DEFAULT_REFINE_MODEL_ID: &str = "qwen2.5-0.5b-instruct";
+pub const DEFAULT_REFINE_MODEL_ID: &str = "s1-mini";
+
+/// The refinement model this one replaced (decision 0012).
+///
+/// `Settings` is `#[serde(default)]`, so every install made before that change
+/// still names it. Left alone, `models::find` would return `None`,
+/// `sync_refiner` would quietly skip, and cleanup would stop working for
+/// anyone who had it switched on, with the checkbox still ticked.
+pub const RETIRED_REFINE_MODEL_ID: &str = "qwen2.5-0.5b-instruct";
 
 /// The hotkey a fresh install starts with, in the accelerator syntax Tauri
 /// understands. Chosen per platform, since a combination that is free on one
@@ -84,6 +92,13 @@ pub struct Settings {
     pub refine_enabled: bool,
     /// Which refinement model to use, when enabled.
     pub refine_model_id: String,
+    /// How much of the model's rewrite to accept (decision 0012).
+    ///
+    /// Not a model setting: S1-mini cleans a transcript the same way either
+    /// way, and this decides how much of that cleanup survives the guard.
+    pub refine_strength: RefineStrength,
+    /// The register the cleaned text is written in.
+    pub refine_styling: crate::refine::Styling,
     /// Ask GitHub once a day whether a newer version is published
     /// (decision 0006). Off by default, and load-bearing that it is: this is
     /// the only thing in the app that reaches the network without the user
@@ -116,6 +131,34 @@ pub struct Settings {
     pub onboarding_completed: bool,
 }
 
+/// How much of a proposed cleanup to accept.
+///
+/// The stage is off by default either way; this is what someone who has
+/// switched it on is choosing between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefineStrength {
+    /// Punctuation, capitalisation and a misheard word. Anything larger is
+    /// thrown away, so fillers and false starts survive into the paste.
+    LightTouch,
+    /// The whole of what a normaliser does: fillers dropped, false starts
+    /// resolved, numbers and dates written out. Still bounded: nothing the
+    /// speaker did not say may appear.
+    #[default]
+    FullCleanup,
+}
+
+impl RefineStrength {
+    /// The guard thresholds this strength judges by.
+    #[must_use]
+    pub const fn limits(self) -> crate::refine::Limits {
+        match self {
+            Self::LightTouch => crate::refine::Limits::light_touch(),
+            Self::FullCleanup => crate::refine::Limits::full_cleanup(),
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -130,6 +173,8 @@ impl Default for Settings {
             mute_while_recording: true,
             refine_enabled: false,
             refine_model_id: DEFAULT_REFINE_MODEL_ID.to_string(),
+            refine_strength: RefineStrength::default(),
+            refine_styling: crate::refine::Styling::default(),
             check_for_updates: false,
             keep_on_clipboard: false,
             history_enabled: false,
@@ -166,12 +211,32 @@ impl Settings {
             }
         };
 
-        match serde_json::from_str(&raw) {
-            Ok(settings) => settings,
+        match serde_json::from_str::<Self>(&raw) {
+            Ok(mut settings) => {
+                settings.migrate();
+                settings
+            }
             Err(e) => {
                 tracing::warn!(path = %path.display(), error = %e, "settings file is invalid, using defaults");
                 Self::default()
             }
+        }
+    }
+
+    /// Bring a settings file written by an older version up to date.
+    ///
+    /// Not saved from here: the next `update_settings` writes it, and until
+    /// then the in-memory value is the one everything reads. Keeping the write
+    /// out of the load path means a read-only data directory still starts.
+    fn migrate(&mut self) {
+        if self.refine_model_id == RETIRED_REFINE_MODEL_ID {
+            tracing::info!(
+                event = "settings_migrated",
+                from = RETIRED_REFINE_MODEL_ID,
+                to = DEFAULT_REFINE_MODEL_ID,
+                "the cleanup model was replaced"
+            );
+            self.refine_model_id = DEFAULT_REFINE_MODEL_ID.to_string();
         }
     }
 
@@ -356,5 +421,44 @@ mod tests {
         let path = settings_path(&dir);
         Settings::default().save(&path).unwrap();
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn a_settings_file_naming_the_retired_cleanup_model_is_migrated() {
+        // Without this the id survives, `models::find` returns None,
+        // `sync_refiner` skips, and cleanup stops working with the checkbox
+        // still ticked, which looks like a bug in the feature rather than a
+        // model that was replaced. See decision 0012.
+        let dir = temp_dir("retired-refiner");
+        let path = settings_path(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &path,
+            format!(r#"{{"refine_enabled":true,"refine_model_id":"{RETIRED_REFINE_MODEL_ID}"}}"#),
+        )
+        .unwrap();
+
+        let loaded = Settings::load(&path);
+        assert_eq!(loaded.refine_model_id, DEFAULT_REFINE_MODEL_ID);
+        // The rest of the file still applies: migrating is not resetting.
+        assert!(loaded.refine_enabled);
+    }
+
+    #[test]
+    fn a_settings_file_naming_a_current_model_is_left_alone() {
+        let dir = temp_dir("kept-refiner");
+        let path = settings_path(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, r#"{"refine_model_id":"something-else"}"#).unwrap();
+        assert_eq!(Settings::load(&path).refine_model_id, "something-else");
+    }
+
+    #[test]
+    fn the_two_strengths_map_to_the_two_guard_rules() {
+        assert_eq!(RefineStrength::LightTouch.limits(), crate::refine::Limits::light_touch());
+        assert_eq!(RefineStrength::FullCleanup.limits(), crate::refine::Limits::full_cleanup());
+        // Full cleanup is the default, because it is what someone switching the
+        // stage on is switching it on *for*.
+        assert_eq!(RefineStrength::default(), RefineStrength::FullCleanup);
     }
 }

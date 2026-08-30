@@ -14,8 +14,8 @@ pub mod guard;
 pub mod onnx;
 pub mod prompt;
 
-pub use guard::{Limits, RejectReason, Verdict};
-pub use prompt::Template;
+pub use guard::{Limits, RejectReason, Rule, Verdict};
+pub use prompt::Styling;
 
 use std::time::Duration;
 
@@ -29,10 +29,12 @@ pub const MAX_INPUT_CHARS: usize = 2_000;
 
 /// How many correction tokens we allow beyond the length of the input.
 ///
-/// A correction is roughly as long as its input. The margin covers punctuation
-/// and expanded numerals; anything past it is the model having started to write
-/// something else, and stopping mid-sentence there costs nothing, because the
-/// guard would have rejected the result anyway.
+/// A cleaned transcript is roughly as long as its input. The margin covers
+/// punctuation and expanded numerals; anything past it is the model having
+/// started to write something else, and stopping mid-sentence there costs
+/// nothing, because the guard would have rejected the result anyway.
+///
+/// The `+ 32` half of the model card's own `1.3 x input_tokens + 32` ceiling.
 pub const OUTPUT_TOKEN_MARGIN: usize = 32;
 
 #[derive(Debug, thiserror::Error)]
@@ -50,12 +52,15 @@ pub enum RefineError {
 }
 
 /// What the refiner was asked to do.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct RefineOptions {
-    /// Words the user is known to use — currently their dictionary's
-    /// replacements. Given to the model so it does not "correct" a term it has
-    /// simply never seen.
-    pub vocabulary: Vec<String>,
+    /// The register the cleaned text is written in.
+    ///
+    /// The only knob. Decision 0005 passed the user's dictionary here too, as a
+    /// hint to the model; a fine-tuned normaliser has no slot for one, so those
+    /// terms went to [`guard::judge`] instead, which is where they always
+    /// belonged. See decision 0012.
+    pub styling: Styling,
 }
 
 /// A proposed rewrite, before the guard has had a look at it.
