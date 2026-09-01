@@ -16,9 +16,53 @@ pub struct DictionaryEntry {
     pub id: u64,
     /// What the model tends to produce.
     pub input: String,
+    /// The other forms it produces for the same word (decision 0013).
+    ///
+    /// Parakeet mishears a given term the same way most of the time, but not
+    /// always the *one* way, and a rule only ever fired on the exact form the
+    /// user typed. These are the rest of them: "tory" and "torrey" alongside
+    /// "tauri", all replaced by the same word.
+    ///
+    /// `#[serde(default)]` rather than a migration: a `dictionary.json`
+    /// written before this existed has no such key and loads with none.
+    #[serde(default)]
+    pub aliases: Vec<String>,
     /// What it should say instead.
     pub replacement: String,
     pub enabled: bool,
+}
+
+impl DictionaryEntry {
+    /// Every form of this entry the transcription might contain.
+    ///
+    /// `input` first, then the aliases. Used to build the replacement rules and
+    /// nothing else: the *replacement* side is what reaches the refinement
+    /// model, and these are misheard forms.
+    fn heard_forms(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.input.as_str())
+            .chain(self.aliases.iter().map(String::as_str))
+            .filter(|form| !form.trim().is_empty())
+    }
+}
+
+/// Trim, drop blanks, and drop anything already present.
+///
+/// `input` counts as present, so an alias repeating the primary form does not
+/// produce a second identical rule. Comparison is case-insensitive because
+/// matching is: two forms differing only in case are one rule.
+fn tidy_aliases(input: &str, aliases: &[String]) -> Vec<String> {
+    let mut seen = vec![input.trim().to_lowercase()];
+    let mut out = Vec::new();
+    for alias in aliases {
+        let alias = alias.trim();
+        let lowered = alias.to_lowercase();
+        if alias.is_empty() || seen.contains(&lowered) {
+            continue;
+        }
+        seen.push(lowered);
+        out.push(alias.to_owned());
+    }
+    out
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,10 +152,13 @@ impl Dictionary {
     ///
     /// # Errors
     ///
-    /// [`DictionaryError::EmptyInput`] when `input` is blank.
+    /// [`DictionaryError::EmptyInput`] when `input` is blank. Blank or
+    /// duplicate `aliases` are dropped rather than refused: they are optional,
+    /// and an empty one is a stray comma rather than a mistake worth a dialog.
     pub fn add(
         &mut self,
         input: &str,
+        aliases: &[String],
         replacement: &str,
     ) -> Result<DictionaryEntry, DictionaryError> {
         let input = input.trim();
@@ -120,6 +167,7 @@ impl Dictionary {
         }
         let entry = DictionaryEntry {
             id: self.next_id(),
+            aliases: tidy_aliases(input, aliases),
             input: input.to_string(),
             replacement: replacement.trim().to_string(),
             enabled: true,
@@ -138,6 +186,7 @@ impl Dictionary {
         &mut self,
         id: u64,
         input: &str,
+        aliases: &[String],
         replacement: &str,
         enabled: bool,
     ) -> Result<DictionaryEntry, DictionaryError> {
@@ -145,12 +194,14 @@ impl Dictionary {
         if input.is_empty() {
             return Err(DictionaryError::EmptyInput);
         }
+        let tidied = tidy_aliases(input, aliases);
         let entry = self
             .entries
             .iter_mut()
             .find(|e| e.id == id)
             .ok_or(DictionaryError::NotFound(id))?;
         entry.input = input.to_string();
+        entry.aliases = tidied;
         entry.replacement = replacement.trim().to_string();
         entry.enabled = enabled;
         Ok(entry.clone())
@@ -191,13 +242,17 @@ impl Dictionary {
     /// Matching is case-insensitive and anchored to word boundaries. Longer
     /// inputs are tried first, so "react native" beats a separate "react" rule.
     /// Replacements are never re-scanned, so a rule cannot feed itself.
+    ///
+    /// An entry contributes one rule per heard form (decision 0013), and they
+    /// all join the same sort, so a long alias still beats a short `input`
+    /// belonging to some other entry.
     #[must_use]
     pub fn apply(&self, text: &str) -> String {
         let mut rules: Vec<(&str, &str)> = self
             .entries
             .iter()
-            .filter(|e| e.enabled && !e.input.trim().is_empty())
-            .map(|e| (e.input.as_str(), e.replacement.as_str()))
+            .filter(|e| e.enabled)
+            .flat_map(|e| e.heard_forms().map(|form| (form, e.replacement.as_str())))
             .collect();
 
         if rules.is_empty() {
@@ -261,7 +316,7 @@ mod tests {
     fn dict(pairs: &[(&str, &str)]) -> Dictionary {
         let mut d = Dictionary::default();
         for (input, replacement) in pairs {
-            d.add(input, replacement).unwrap();
+            d.add(input, &[], replacement).unwrap();
         }
         d
     }
@@ -326,7 +381,7 @@ mod tests {
     #[test]
     fn disabled_entries_are_skipped() {
         let mut d = dict(&[("cotlin", "Kotlin")]);
-        d.update(1, "cotlin", "Kotlin", false).unwrap();
+        d.update(1, "cotlin", &[], "Kotlin", false).unwrap();
         assert_eq!(d.apply("using cotlin"), "using cotlin");
     }
 
@@ -362,14 +417,14 @@ mod tests {
     #[test]
     fn entries_need_a_non_empty_input() {
         let mut d = Dictionary::default();
-        assert!(matches!(d.add("   ", "x"), Err(DictionaryError::EmptyInput)));
+        assert!(matches!(d.add("   ", &[], "x"), Err(DictionaryError::EmptyInput)));
     }
 
     #[test]
     fn ids_are_unique_and_survive_deletion() {
         let mut d = dict(&[("a", "A"), ("b", "B")]);
         d.remove(1).unwrap();
-        let third = d.add("c", "C").unwrap();
+        let third = d.add("c", &[], "C").unwrap();
         // Reusing id 1 would let a stale UI reference the wrong entry.
         assert_eq!(third.id, 3);
     }
@@ -405,5 +460,84 @@ mod tests {
     fn the_plan_example_works_end_to_end() {
         let d = dict(&[("cotlin", "Kotlin")]);
         assert_eq!(d.apply("I'm using cotlin"), "I'm using Kotlin");
+    }
+
+    // Decision 0013: one entry, several heard forms.
+
+    fn with_aliases(input: &str, aliases: &[&str], replacement: &str) -> Dictionary {
+        let mut d = Dictionary::default();
+        let aliases: Vec<String> = aliases.iter().map(|a| (*a).to_string()).collect();
+        d.add(input, &aliases, replacement).unwrap();
+        d
+    }
+
+    #[test]
+    fn an_alias_is_replaced_just_like_the_input() {
+        let d = with_aliases("tauri", &["tory", "torrey"], "Tauri");
+        assert_eq!(d.apply("run tauri dev"), "run Tauri dev");
+        assert_eq!(d.apply("run tory dev"), "run Tauri dev");
+        assert_eq!(d.apply("run Torrey dev"), "run Tauri dev");
+    }
+
+    #[test]
+    fn the_longest_heard_form_wins_across_entries_and_aliases() {
+        // The alias belongs to one entry and the shorter input to another, so
+        // this only holds if every form joins a single sort.
+        let mut d = Dictionary::default();
+        d.add("react", &[], "React").unwrap();
+        d.add("react native", &["react nateev".to_string()], "React Native")
+            .unwrap();
+        assert_eq!(d.apply("using react nateev today"), "using React Native today");
+        assert_eq!(d.apply("using react today"), "using React today");
+    }
+
+    #[test]
+    fn an_alias_still_only_fires_on_whole_words() {
+        let d = with_aliases("type script", &["typescrypt"], "TypeScript");
+        assert_eq!(d.apply("prototype scripting"), "prototype scripting");
+        assert_eq!(d.apply("typescrypting"), "typescrypting");
+        assert_eq!(d.apply("typescrypt is fine"), "TypeScript is fine");
+    }
+
+    #[test]
+    fn a_blank_or_duplicate_alias_is_dropped() {
+        // A stray comma in the UI field, the primary form typed again, and the
+        // same alias in another case: all one rule, none of them an error.
+        let d = with_aliases("tauri", &["", "  ", "TAURI", "tory", "Tory"], "Tauri");
+        assert_eq!(d.entries[0].aliases, vec!["tory".to_string()]);
+    }
+
+    #[test]
+    fn updating_an_entry_replaces_its_aliases() {
+        let mut d = with_aliases("tauri", &["tory"], "Tauri");
+        d.update(1, "tauri", &["torrey".to_string()], "Tauri", true).unwrap();
+        assert_eq!(d.entries[0].aliases, vec!["torrey".to_string()]);
+        assert_eq!(d.apply("tory dev"), "tory dev");
+        assert_eq!(d.apply("torrey dev"), "Tauri dev");
+    }
+
+    #[test]
+    fn an_entry_saved_before_aliases_existed_loads_with_none() {
+        // The whole backward-compatibility mechanism is `#[serde(default)]`.
+        // A file written by an older build has no `aliases` key at all.
+        let raw = r#"{"entries":[{"id":1,"input":"cotlin","replacement":"Kotlin","enabled":true}]}"#;
+        let d: Dictionary = serde_json::from_str(raw).unwrap();
+        assert_eq!(d.entries[0].aliases, Vec::<String>::new());
+        assert_eq!(d.apply("I'm using cotlin"), "I'm using Kotlin");
+    }
+
+    #[test]
+    fn aliases_never_reach_the_refinement_vocabulary() {
+        // The guard is told which words are the speaker's own. An alias is a
+        // misheard form, and showing a model a mistake invites it to make one.
+        let d = with_aliases("tauri", &["tory", "torrey"], "Tauri");
+        assert_eq!(d.replacement_terms(), vec!["Tauri".to_string()]);
+    }
+
+    #[test]
+    fn a_disabled_entry_takes_its_aliases_with_it() {
+        let mut d = with_aliases("tauri", &["tory"], "Tauri");
+        d.update(1, "tauri", &["tory".to_string()], "Tauri", false).unwrap();
+        assert_eq!(d.apply("tory dev"), "tory dev");
     }
 }
