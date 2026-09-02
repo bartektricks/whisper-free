@@ -194,6 +194,8 @@ export interface UpdateStatus {
 export interface DictionaryEntry {
   id: number;
   input: string;
+  /** Other forms the model produces for the same word (decision 0013). */
+  aliases: string[];
   replacement: string;
   enabled: boolean;
 }

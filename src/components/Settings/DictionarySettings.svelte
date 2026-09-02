@@ -7,10 +7,18 @@
   let error = $state<string | null>(null);
 
   let newInput = $state("");
+  let newAliases = $state("");
   let newReplacement = $state("");
   let editingId = $state<number | null>(null);
   let editInput = $state("");
+  let editAliases = $state("");
   let editReplacement = $state("");
+
+  /** The "also heard as" field is comma-separated; the backend drops blanks. */
+  const parseAliases = (raw: string) =>
+    raw.split(",").map((a) => a.trim()).filter((a) => a.length > 0);
+
+  const formatAliases = (aliases: string[]) => aliases.join(", ");
 
   async function run(action: () => Promise<DictionaryEntry[]>) {
     try {
@@ -30,11 +38,13 @@
     await run(() =>
       invoke<DictionaryEntry[]>("add_dictionary_entry", {
         input: newInput,
+        aliases: parseAliases(newAliases),
         replacement: newReplacement,
       }),
     );
     if (!error) {
       newInput = "";
+      newAliases = "";
       newReplacement = "";
     }
   }
@@ -42,6 +52,7 @@
   function startEdit(entry: DictionaryEntry) {
     editingId = entry.id;
     editInput = entry.input;
+    editAliases = formatAliases(entry.aliases);
     editReplacement = entry.replacement;
   }
 
@@ -50,6 +61,7 @@
       invoke<DictionaryEntry[]>("update_dictionary_entry", {
         id: entry.id,
         input: editInput,
+        aliases: parseAliases(editAliases),
         replacement: editReplacement,
         enabled: entry.enabled,
       }),
@@ -62,6 +74,7 @@
       invoke<DictionaryEntry[]>("update_dictionary_entry", {
         id: entry.id,
         input: entry.input,
+        aliases: entry.aliases,
         replacement: entry.replacement,
         enabled: !entry.enabled,
       }),
@@ -78,7 +91,9 @@
   <p class="intro">
     Replacements applied to every transcription before it is inserted. Matching
     ignores case and only fires on whole words, so a rule for "go" will not touch
-    "google".
+    "google". If the model mishears a word more than one way, list the other
+    forms under "also heard as", separated by commas, and they all become the
+    same replacement.
   </p>
 
   <form class="add" onsubmit={add}>
@@ -96,6 +111,13 @@
       aria-label="Replacement"
     />
     <button type="submit" class="primary" disabled={!newInput.trim()}>Add entry</button>
+    <input
+      class="aliases"
+      type="text"
+      bind:value={newAliases}
+      placeholder="Also heard as (optional, comma separated)"
+      aria-label="Also heard as"
+    />
   </form>
 
   {#if error}
@@ -113,6 +135,7 @@
         <tr>
           <th class="toggle-col"><span class="sr-only">Enabled</span></th>
           <th>Recognised text</th>
+          <th>Also heard as</th>
           <th>Replacement</th>
           <th class="actions-col"><span class="sr-only">Actions</span></th>
         </tr>
@@ -130,6 +153,14 @@
             </td>
             {#if editingId === entry.id}
               <td><input type="text" bind:value={editInput} /></td>
+              <td>
+                <input
+                  type="text"
+                  bind:value={editAliases}
+                  placeholder="Comma separated"
+                  aria-label="Also heard as"
+                />
+              </td>
               <td><input type="text" bind:value={editReplacement} /></td>
               <td class="actions-col">
                 <button type="button" onclick={() => saveEdit(entry)}>Save</button>
@@ -137,6 +168,11 @@
               </td>
             {:else}
               <td>{entry.input}</td>
+              <td class="aliases-col">
+                {#if entry.aliases.length > 0}{formatAliases(entry.aliases)}{:else}<span
+                    class="none">—</span
+                  >{/if}
+              </td>
               <td>{entry.replacement}</td>
               <td class="actions-col">
                 <button type="button" onclick={() => startEdit(entry)}>Edit</button>
@@ -166,6 +202,7 @@
 
   .add {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     margin-bottom: 14px;
@@ -174,6 +211,19 @@
   .add input {
     flex: 1;
     min-width: 0;
+  }
+
+  /* Its own line: four controls abreast leaves none of them readable. */
+  .add .aliases {
+    flex-basis: 100%;
+  }
+
+  .aliases-col {
+    color: var(--text-dim);
+  }
+
+  .none {
+    opacity: 0.6;
   }
 
   .arrow {

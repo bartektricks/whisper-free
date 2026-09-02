@@ -516,11 +516,12 @@ pub fn get_dictionary(ctx: State<'_, AppContext>) -> CommandResult<Vec<Dictionar
 pub fn add_dictionary_entry(
     ctx: State<'_, AppContext>,
     input: String,
+    aliases: Vec<String>,
     replacement: String,
 ) -> CommandResult<Vec<DictionaryEntry>> {
     let mut dictionary = ctx.dictionary.lock().map_err(lock_err)?;
     dictionary
-        .add(&input, &replacement)
+        .add(&input, &aliases, &replacement)
         .map_err(|e| e.user_message())?;
     persist_dictionary(&ctx, &dictionary)?;
     Ok(dictionary.entries.clone())
@@ -535,12 +536,13 @@ pub fn update_dictionary_entry(
     ctx: State<'_, AppContext>,
     id: u64,
     input: String,
+    aliases: Vec<String>,
     replacement: String,
     enabled: bool,
 ) -> CommandResult<Vec<DictionaryEntry>> {
     let mut dictionary = ctx.dictionary.lock().map_err(lock_err)?;
     dictionary
-        .update(id, &input, &replacement, enabled)
+        .update(id, &input, &aliases, &replacement, enabled)
         .map_err(|e| e.user_message())?;
     persist_dictionary(&ctx, &dictionary)?;
     Ok(dictionary.entries.clone())

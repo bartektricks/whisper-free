@@ -224,9 +224,9 @@ fn main() {
 
     // The plan's own dictionary example, plus a Polish one.
     let mut dictionary = Dictionary::default();
-    dictionary.add("cotlin", "Kotlin").unwrap();
-    dictionary.add("type script", "TypeScript").unwrap();
-    dictionary.add("americans", "Americans").unwrap();
+    dictionary.add("cotlin", &[], "Kotlin").unwrap();
+    dictionary.add("type script", &[], "TypeScript").unwrap();
+    dictionary.add("americans", &[], "Americans").unwrap();
 
     for path in &files {
         let audio = match read_wav(path) {

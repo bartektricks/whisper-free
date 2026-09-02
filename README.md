@@ -66,7 +66,9 @@ has **Run setup again**.
 Also in Settings: a dictionary of word replacements for names and jargon, muting
 the rest of the machine while the microphone is open, keeping the transcription
 on the clipboard, an optional local history of what you dictated, start at login,
-and an optional daily update check.
+and an optional daily update check. A dictionary entry can list several of the
+forms the model mishears, so one rule covers "tory" and "torrey" as well as
+"tauri".
 
 ## Models
 
